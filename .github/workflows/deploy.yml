@@ -1,4 +1,4 @@
-name: Deploy JBRCADE to GitHub Pages
+name: Build Native iOS App
 
 on:
   push:
@@ -6,8 +6,9 @@ on:
       - main
 
 jobs:
-  build-and-deploy:
-    runs-on: ubuntu-latest
+  build-ios:
+    runs-on: macos-latest
+
     steps:
       - name: Checkout Repository
         uses: actions/checkout@v3
@@ -15,19 +16,39 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
-          python-version: '3.11'
+          python-version: '3.10'
 
-      - name: Install Pygbag
+      - name: Install System Dependencies
         run: |
-          python -m pip install --upgrade pip
-          pip install pygbag
+          brew install autoconf automake libtool pkg-config
+          pip install --upgrade pip
+          pip install kivy-ios Cython
 
-      - name: Build WebAssembly App
+      - name: Initialize toolchain and build Kivy
         run: |
-          python -m pygbag --build src/main.py
+          toolchain build python3 kivy
 
-      - name: Deploy to GitHub Pages
-        uses: peaceiris/actions-gh-pages@v3
+      - name: Create Xcode Project
+        run: |
+          toolchain create JBRCADE ./src
+
+      - name: Build iOS App Package
+        run: |
+          xcodebuild -project JBRCADE-ios/JBRCADE.xcodeproj \
+            -scheme JBRCADE \
+            -configuration Release \
+            -sdk iphoneos \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Zip iOS Output
+        run: |
+          cd JBRCADE-ios/build/Release-iphoneos
+          zip -r JBRCADE-iOS.zip JBRCADE.app
+
+      - name: Upload iOS Build Artifact
+        uses: actions/upload-artifact@v3
         with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./src/build/web
+          name: JBRCADE-iOS-App
+          path: JBRCADE-ios/build/Release-iphoneos/JBRCADE-iOS.zip
