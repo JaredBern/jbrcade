@@ -1,0 +1,1049 @@
+#:kivy 2.3.1
+<MainMenuScreen>:
+    RelativeLayout:
+        canvas.before:
+            Color:
+                rgba: 0.04, 0.06, 0.17, 1  # Deep Cosmic Background (#0A0F2C)
+            Rectangle:
+                pos: self.pos
+                size: self.size
+
+        BoxLayout:
+            orientation: 'vertical'
+            size_hint_y: None
+            height: dp(60)
+            pos_hint: {'center_x': 0.5, 'top': 1.0}
+            padding: [0, dp(10), 0, 0]
+
+            Label:
+                text: "JBRCADE"
+                font_name: "assets/fonts/ARCADE_N.TTF"
+                font_size: '26sp'
+                bold: True
+                color: (0, 0.75, 1, 1)
+
+        # 2. FIXED GAP VIEWPORT: Pulls down the top anchor boundary
+        ScrollView:
+            size_hint: (1, 0.88)
+            pos_hint: {'x': 0, 'y': 0}
+            do_scroll_x: False       
+            do_scroll_y: True        
+            bar_width: dp(4)         
+            scroll_type: ['content', 'bars']
+
+            # MASTER VERTICAL CONTAINER
+            BoxLayout:
+                orientation: 'vertical'
+                size_hint_y: None
+                height: self.minimum_height
+                padding: [dp(12), dp(12), dp(12), dp(24)]
+                spacing: dp(15)
+
+                # ==========================================
+                # SYSTEM / MENU CONTROLS
+                # ==========================================
+                GridLayout:
+                    cols: 3
+                    spacing: dp(6)
+                    size_hint_y: None
+                    height: self.minimum_height
+
+                    DummyTile:
+                    
+                    BoxLayout: # About Screen Launcher
+                        size_hint_y: None
+                        height: self.width
+                        Button:
+                            id: about_preview_button
+                            background_normal: ''
+                            background_color: 0, 0, 0, 0 
+                            on_release: root.manager.current = 'about'
+                            canvas.before:
+                                Color:
+                                    rgba: 1, 1, 1, 1
+                                Rectangle:
+                                    source: 'atlas://assets/images/game_sprites/about_preview'
+                                    pos: self.pos
+                                    size: self.size
+                                Color:
+                                    rgba: 0, 0.75, 1, 1 
+                                Line:
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                                    width: dp(2)
+
+                    BoxLayout: # Settings launch tile
+                        size_hint_y: None
+                        height: self.width
+                        Button:
+                            id: settings_preview_button
+                            background_normal: ''
+                            background_color: 0, 0, 0, 0 
+                            on_release: root.manager.current = 'settings'
+                            canvas.before:
+                                Color:
+                                    rgba: 1, 1, 1, 1
+                                Rectangle:
+                                    source: 'atlas://assets/images/game_sprites/settings_preview'
+                                    pos: self.pos
+                                    size: self.size
+                                Color:
+                                    rgba: 0, 0.75, 1, 1 
+                                Line:
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                                    width: dp(2)
+
+                # ==========================================
+                # MEMORY & ATTENTION
+                # ==========================================
+                Label:
+                    text: "MEMORY & ATTENTION"
+                    font_name: "assets/fonts/ARCADE_N.TTF"
+                    font_size: '11sp'
+                    color: (0, 0.75, 1, 1)
+                    size_hint_y: None
+                    height: dp(20)
+                    text_size: self.size
+                    halign: 'left'
+                    valign: 'middle'
+
+                GridLayout:
+                    cols: 3
+                    spacing: dp(6)
+                    size_hint_y: None
+                    height: self.minimum_height
+
+                    BoxLayout: # Focus Flash
+                        size_hint_y: None
+                        height: self.width
+                        Button:
+                            id: focus_flash_preview_button
+                            background_normal: ''
+                            background_color: 0, 0, 0, 0 
+                            on_release: root.manager.current = 'focus_flash'
+                            canvas.before:
+                                Color:
+                                    rgba: 1, 1, 1, 1
+                                Rectangle:
+                                    source: 'atlas://assets/images/game_sprites/focus_flash_preview'
+                                    pos: self.pos
+                                    size: self.size
+                                Color:
+                                    rgba: 0, 0.75, 1, 1 
+                                Line:
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                                    width: dp(2)
+
+                    BoxLayout: # Matrix Recall
+                        size_hint_y: None
+                        height: self.width
+                        Button:
+                            id: matrix_recall_preview_button
+                            background_normal: ''
+                            background_color: 0, 0, 0, 0 
+                            on_release: root.manager.current = 'matrix_recall'
+                            canvas.before:
+                                Color:
+                                    rgba: 1, 1, 1, 1
+                                Rectangle:
+                                    source: 'atlas://assets/images/game_sprites/matrix_recall_preview'
+                                    pos: self.pos
+                                    size: self.size
+                                Color:
+                                    rgba: 0, 0.75, 1, 1 
+                                Line:
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                                    width: dp(2)
+
+                    BoxLayout: # Planet Hopper
+                        size_hint_y: None
+                        height: self.width
+                        Button:
+                            id: planet_hopper_preview_button
+                            background_normal: ''
+                            background_color: 0, 0, 0, 0 
+                            on_release: root.manager.current = 'planet_hopper'
+                            canvas.before:
+                                Color:
+                                    rgba: 1, 1, 1, 1
+                                Rectangle:
+                                    source: 'atlas://assets/images/game_sprites/planet_hopper_preview'
+                                    pos: self.pos
+                                    size: self.size
+                                Color:
+                                    rgba: 0, 0.75, 1, 1 
+                                Line:
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                                    width: dp(2)
+
+                # ==========================================
+                # SPEED
+                # ==========================================
+                Label:
+                    text: "SPEED"
+                    font_name: "assets/fonts/ARCADE_N.TTF"
+                    font_size: '11sp'
+                    color: (0, 0.75, 1, 1)
+                    size_hint_y: None
+                    height: dp(20)
+                    text_size: self.size
+                    halign: 'left'
+                    valign: 'middle'
+
+                GridLayout:
+                    cols: 3
+                    spacing: dp(6)
+                    size_hint_y: None
+                    height: self.minimum_height
+
+                    BoxLayout: # Stroop Match
+                        size_hint_y: None
+                        height: self.width
+                        Button:
+                            id: stroop_match_preview_button
+                            background_normal: ''
+                            background_color: 0, 0, 0, 0 
+                            on_release: root.manager.current = 'stroop_match'
+                            canvas.before:
+                                Color:
+                                    rgba: 1, 1, 1, 1
+                                Rectangle:
+                                    source: 'atlas://assets/images/game_sprites/stroop_match_preview'
+                                    pos: self.pos
+                                    size: self.size
+                                Color:
+                                    rgba: 0, 0.75, 1, 1 
+                                Line:
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                                    width: dp(2)
+
+                    BoxLayout: # Point Velocity
+                        size_hint_y: None
+                        height: self.width
+                        Button:
+                            id: point_velocity_preview_button
+                            background_normal: ''
+                            background_color: 0, 0, 0, 0 
+                            on_release: root.manager.current = 'point_velocity'
+                            canvas.before:
+                                Color:
+                                    rgba: 1, 1, 1, 1
+                                Rectangle:
+                                    source: 'atlas://assets/images/game_sprites/point_velocity_preview'
+                                    pos: self.pos
+                                    size: self.size
+                                Color:
+                                    rgba: 0, 0.75, 1, 1 
+                                Line:
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                                    width: dp(2)
+
+                    BoxLayout: # Consecutive Shapes
+                        size_hint_y: None
+                        height: self.width
+                        Button:
+                            id: consecutive_shapes_preview_button
+                            background_normal: ''
+                            background_color: 0, 0, 0, 0 
+                            on_release: root.manager.current = 'consecutive_shapes'
+                            canvas.before:
+                                Color:
+                                    rgba: 1, 1, 1, 1
+                                Rectangle:
+                                    source: 'atlas://assets/images/game_sprites/consecutive_shapes_preview'
+                                    pos: self.pos
+                                    size: self.size
+                                Color:
+                                    rgba: 0, 0.75, 1, 1 
+                                Line:
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                                    width: dp(2)
+
+                # ==========================================
+                # LOGIC
+                # ==========================================
+                Label:
+                    text: "LOGIC"
+                    font_name: "assets/fonts/ARCADE_N.TTF"
+                    font_size: '11sp'
+                    color: (0, 0.75, 1, 1)
+                    size_hint_y: None
+                    height: dp(20)
+                    text_size: self.size
+                    halign: 'left'
+                    valign: 'middle'
+
+                GridLayout:
+                    cols: 3
+                    spacing: dp(6)
+                    size_hint_y: None
+                    height: self.minimum_height
+
+                    BoxLayout: # Code Capture
+                        size_hint_y: None
+                        height: self.width
+                        Button:
+                            id: code_capture_preview_button
+                            background_normal: ''
+                            background_color: 0, 0, 0, 0 
+                            on_release: root.manager.current = 'code_capture'
+                            canvas.before:
+                                Color:
+                                    rgba: 1, 1, 1, 1
+                                Rectangle:
+                                    source: 'atlas://assets/images/game_sprites/code_capture_preview'
+                                    pos: self.pos
+                                    size: self.size
+                                Color:
+                                    rgba: 0, 0.75, 1, 1 
+                                Line:
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                                    width: dp(2)
+
+                    BoxLayout: # Grid Lock
+                        size_hint_y: None
+                        height: self.width
+                        Button:
+                            id: grid_lock_preview_button
+                            background_normal: ''
+                            background_color: 0, 0, 0, 0 
+                            on_release: root.manager.current = 'grid_lock'
+                            canvas.before:
+                                Color:
+                                    rgba: 1, 1, 1, 1
+                                Rectangle:
+                                    source: 'atlas://assets/images/game_sprites/grid_lock_preview'
+                                    pos: self.pos
+                                    size: self.size
+                                Color:
+                                    rgba: 0, 0.75, 1, 1 
+                                Line:
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                                    width: dp(2)
+
+                    BoxLayout: # Whats Next
+                        size_hint_y: None
+                        height: self.width
+                        Button:
+                            id: whats_next_preview_button
+                            background_normal: ''
+                            background_color: 0, 0, 0, 0 
+                            on_release: root.manager.current = 'whats_next'
+                            canvas.before:
+                                Color:
+                                    rgba: 1, 1, 1, 1
+                                Rectangle:
+                                    source: 'atlas://assets/images/game_sprites/whats_next_preview'
+                                    pos: self.pos
+                                    size: self.size
+                                Color:
+                                    rgba: 0, 0.75, 1, 1 
+                                Line:
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                                    width: dp(2)
+
+                    BoxLayout: # Against the Grain
+                        size_hint_y: None
+                        height: self.width
+                        Button:
+                            id: against_grain_preview_button
+                            background_normal: ''
+                            background_color: 0, 0, 0, 0 
+                            on_release: root.manager.current = 'against_grain'
+                            canvas.before:
+                                Color:
+                                    rgba: 1, 1, 1, 1
+                                Rectangle:
+                                    source: 'atlas://assets/images/game_sprites/against_grain_preview'
+                                    pos: self.pos
+                                    size: self.size
+                                Color:
+                                    rgba: 0, 0.75, 1, 1 
+                                Line:
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                                    width: dp(2)
+
+                # ==========================================
+                # MATH
+                # ==========================================
+                Label:
+                    text: "MATH"
+                    font_name: "assets/fonts/ARCADE_N.TTF"
+                    font_size: '11sp'
+                    color: (0, 0.75, 1, 1)
+                    size_hint_y: None
+                    height: dp(20)
+                    text_size: self.size
+                    halign: 'left'
+                    valign: 'middle'
+
+                GridLayout:
+                    cols: 3
+                    spacing: dp(6)
+                    size_hint_y: None
+                    height: self.minimum_height
+
+                    BoxLayout: # Higher Equation
+                        size_hint_y: None
+                        height: self.width
+                        Button:
+                            id: higher_equation_preview_button
+                            background_normal: ''
+                            background_color: 0, 0, 0, 0 
+                            on_release: root.manager.current = 'higher_equation'
+                            canvas.before:
+                                Color:
+                                    rgba: 1, 1, 1, 1
+                                Rectangle:
+                                    source: 'atlas://assets/images/game_sprites/higher_equation_preview'
+                                    pos: self.pos
+                                    size: self.size
+                                Color:
+                                    rgba: 0, 0.75, 1, 1 
+                                Line:
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                                    width: dp(2)
+
+                    BoxLayout: # Math Invaders
+                        size_hint_y: None
+                        height: self.width
+                        Button:
+                            id: math_invaders_preview_button
+                            background_normal: ''
+                            background_color: 0, 0, 0, 0 
+                            on_release: root.manager.current = 'math_invaders'
+                            canvas.before:
+                                Color:
+                                    rgba: 1, 1, 1, 1
+                                Rectangle:
+                                    source: 'atlas://assets/images/game_sprites/math_invaders_preview'
+                                    pos: self.pos
+                                    size: self.size
+                                Color:
+                                    rgba: 0, 0.75, 1, 1 
+                                Line:
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                                    width: dp(2)
+
+                    BoxLayout: # Sequence Switch
+                        size_hint_y: None
+                        height: self.width
+                        Button:
+                            id: sequence_switch_preview_button
+                            background_normal: ''
+                            background_color: 0, 0, 0, 0 
+                            on_release: root.manager.current = 'sequence_switch'
+                            canvas.before:
+                                Color:
+                                    rgba: 1, 1, 1, 1
+                                Rectangle:
+                                    source: 'atlas://assets/images/game_sprites/sequence_switch_preview'
+                                    pos: self.pos
+                                    size: self.size
+                                Color:
+                                    rgba: 0, 0.75, 1, 1 
+                                Line:
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                                    width: dp(2)
+
+                # ==========================================
+                # VISUAL-SPATIAL
+                # ==========================================
+                Label:
+                    text: "VISUAL-SPATIAL"
+                    font_name: "assets/fonts/ARCADE_N.TTF"
+                    font_size: '11sp'
+                    color: (0, 0.75, 1, 1)
+                    size_hint_y: None
+                    height: dp(20)
+                    text_size: self.size
+                    halign: 'left'
+                    valign: 'middle'
+
+                GridLayout:
+                    cols: 3
+                    spacing: dp(6)
+                    size_hint_y: None
+                    height: self.minimum_height
+
+                    BoxLayout: # Rotational Maze
+                        size_hint_y: None
+                        height: self.width
+                        Button:
+                            id: rotational_maze_preview_button
+                            background_normal: ''
+                            background_color: 0, 0, 0, 0 
+                            on_release: root.manager.current = 'rotational_maze'
+                            canvas.before:
+                                Color:
+                                    rgba: 1, 1, 1, 1
+                                Rectangle:
+                                    source: 'atlas://assets/images/game_sprites/rotational_maze_preview'
+                                    pos: self.pos
+                                    size: self.size
+                                Color:
+                                    rgba: 0, 0.75, 1, 1 
+                                Line:
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                                    width: dp(2)
+
+                    BoxLayout: # Air Traffic Control
+                        size_hint_y: None
+                        height: self.width
+                        Button:
+                            id: air_traffic_preview_button
+                            background_normal: ''
+                            background_color: 0, 0, 0, 0 
+                            on_release: root.manager.current = 'air_traffic'
+                            canvas.before:
+                                Color:
+                                    rgba: 1, 1, 1, 1
+                                Rectangle:
+                                    source: 'atlas://assets/images/game_sprites/air_traffic_preview'
+                                    pos: self.pos
+                                    size: self.size
+                                Color:
+                                    rgba: 0, 0.75, 1, 1 
+                                Line:
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                                    width: dp(2)
+
+                    BoxLayout: # Tile Turnpike
+                        size_hint_y: None
+                        height: self.width
+                        Button:
+                            id: tile_turnpike_preview_button
+                            background_normal: ''
+                            background_color: 0, 0, 0, 0 
+                            on_release: root.manager.current = 'tile_turnpike'
+                            canvas.before:
+                                Color:
+                                    rgba: 1, 1, 1, 1
+                                Rectangle:
+                                    source: 'atlas://assets/images/game_sprites/tile_turnpike_preview'
+                                    pos: self.pos
+                                    size: self.size
+                                Color:
+                                    rgba: 0, 0.75, 1, 1 
+                                Line:
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                                    width: dp(2)
+
+                # ==========================================
+                # STRATEGY & RESPONSE
+                # ==========================================
+                Label:
+                    text: "STRATEGY & RESPONSE"
+                    font_name: "assets/fonts/ARCADE_N.TTF"
+                    font_size: '11sp'
+                    color: (0, 0.75, 1, 1)
+                    size_hint_y: None
+                    height: dp(20)
+                    text_size: self.size
+                    halign: 'left'
+                    valign: 'middle'
+
+                GridLayout:
+                    cols: 3
+                    spacing: dp(6)
+                    size_hint_y: None
+                    height: self.minimum_height
+
+                    BoxLayout: # Waiter Waiter
+                        size_hint_y: None
+                        height: self.width
+                        Button:
+                            id: waiter_waiter_preview_button
+                            background_normal: ''
+                            background_color: 0, 0, 0, 0 
+                            on_release: root.manager.current = 'waiter_waiter'
+                            canvas.before:
+                                Color:
+                                    rgba: 1, 1, 1, 1
+                                Rectangle:
+                                    source: 'atlas://assets/images/game_sprites/waiter_waiter_preview'
+                                    pos: self.pos
+                                    size: self.size
+                                Color:
+                                    rgba: 0, 0.75, 1, 1 
+                                Line:
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                                    width: dp(2)
+
+                    BoxLayout: # Gate Keeper
+                        size_hint_y: None
+                        height: self.width
+                        Button:
+                            id: gate_keeper_preview_button
+                            background_normal: ''
+                            background_color: 0, 0, 0, 0 
+                            on_release: root.manager.current = 'gate_keeper'
+                            canvas.before:
+                                Color:
+                                    rgba: 1, 1, 1, 1
+                                Rectangle:
+                                    source: 'atlas://assets/images/game_sprites/gate_keeper_preview'
+                                    pos: self.pos
+                                    size: self.size
+                                Color:
+                                    rgba: 0, 0.75, 1, 1 
+                                Line:
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                                    width: dp(2)
+
+                    BoxLayout: # Drop Off
+                        size_hint_y: None
+                        height: self.width
+                        Button:
+                            id: drop_off_preview_button
+                            background_normal: ''
+                            background_color: 0, 0, 0, 0 
+                            on_release: root.manager.current = 'drop_off'
+                            canvas.before:
+                                Color:
+                                    rgba: 1, 1, 1, 1
+                                Rectangle:
+                                    source: 'atlas://assets/images/game_sprites/drop_off_preview'
+                                    pos: self.pos
+                                    size: self.size
+                                Color:
+                                    rgba: 0, 0.75, 1, 1 
+                                Line:
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                                    width: dp(2)
+
+                # ==========================================
+                # ARCADE (JUST FOR FUN)
+                # ==========================================
+                Label:
+                    text: "ARCADE"
+                    font_name: "assets/fonts/ARCADE_N.TTF"
+                    font_size: '11sp'
+                    color: (0, 0.75, 1, 1)
+                    size_hint_y: None
+                    height: dp(20)
+                    text_size: self.size
+                    halign: 'left'
+                    valign: 'middle'
+
+                GridLayout:
+                    cols: 3
+                    spacing: dp(6)
+                    size_hint_y: None
+                    height: self.minimum_height
+
+                    BoxLayout: # Toasty Mallow
+                        size_hint_y: None
+                        height: self.width
+                        Button:
+                            id: tile_preview_button
+                            background_normal: ''
+                            background_color: 0, 0, 0, 0 
+                            on_release: root.manager.current = 'toasty_mallow'
+                            canvas.before:
+                                Color:
+                                    rgba: 1, 1, 1, 1
+                                Rectangle:
+                                    source: 'atlas://assets/images/game_sprites/tile_preview'
+                                    pos: self.pos
+                                    size: self.size
+                                Color:
+                                    rgba: 0, 0.75, 1, 1 
+                                Line:
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                                    width: dp(2)
+
+                    BoxLayout: # Sinky Stone
+                        size_hint_y: None
+                        height: self.width
+                        Button:
+                            id: sinky_stone_preview_button
+                            background_normal: ''
+                            background_color: 0, 0, 0, 0 
+                            on_release: root.manager.current = 'sinky_stone'
+                            canvas.before:
+                                Color:
+                                    rgba: 1, 1, 1, 1
+                                Rectangle:
+                                    source: 'atlas://assets/images/game_sprites/sinky_stone_preview'
+                                    pos: self.pos
+                                    size: self.size
+                                Color:
+                                    rgba: 0, 0.75, 1, 1 
+                                Line:
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                                    width: dp(2)
+                    
+                    BoxLayout: # Neon Python
+                        size_hint_y: None
+                        height: self.width
+                        Button:
+                            id: neon_python_preview_button
+                            background_normal: ''
+                            background_color: 0, 0, 0, 0 
+                            on_release: root.manager.current = 'neon_python'
+                            canvas.before:
+                                Color:
+                                    rgba: 1, 1, 1, 1
+                                Rectangle:
+                                    source: 'atlas://assets/images/game_sprites/neon_python_preview'
+                                    pos: self.pos
+                                    size: self.size
+                                Color:
+                                    rgba: 0, 0.75, 1, 1 
+                                Line:
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                                    width: dp(2)
+
+                # ==========================================
+                # WIND DOWN
+                # ==========================================
+                Label:
+                    text: "WIND DOWN"
+                    font_name: "assets/fonts/ARCADE_N.TTF"
+                    font_size: '11sp'
+                    color: (0, 0.85, 0.4, 1) # Gentle Green
+                    size_hint_y: None
+                    height: dp(20)
+                    text_size: self.size
+                    halign: 'left'
+                    valign: 'middle'
+
+                GridLayout:
+                    cols: 3
+                    spacing: dp(6)
+                    size_hint_y: None
+                    height: self.minimum_height
+
+                    # 🟢 NEW: Zen Breathing Launch Tile
+                    BoxLayout:
+                        size_hint_y: None
+                        height: self.width
+                        Button:
+                            id: zen_breathing_preview_button
+                            background_normal: ''
+                            background_color: 0, 0, 0, 0 
+                            on_release: root.manager.current = 'zen_breathing'
+                            canvas.before:
+                                Color:
+                                    rgba: 1, 1, 1, 1
+                                Rectangle:
+                                    # Fallback to an existing preview image or create a new one
+                                    source: 'atlas://assets/images/game_sprites/zen_breathing_preview' 
+                                    pos: self.pos
+                                    size: self.size
+                                Color:
+                                    rgba: 0, 0.85, 0.4, 1  # Gentle Green Border
+                                Line:
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                                    width: dp(2)
+
+                    # 🟢 Screenshot Launch Tile
+                    BoxLayout:
+                        size_hint_y: None
+                        height: self.width
+                        Button:
+                            id: screenshot_preview_button
+                            background_normal: ''
+                            background_color: 0, 0, 0, 0 
+                            on_release: root.manager.current = 'screenshot'
+                            canvas.before:
+                                Color:
+                                    rgba: 1, 1, 1, 1
+                                Rectangle:
+                                    source: 'atlas://assets/images/game_sprites/screenshot_preview'
+                                    pos: self.pos
+                                    size: self.size
+                                Color:
+                                    rgba: 0, 0.85, 0.4, 1
+                                Line:
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                                    width: dp(2)
+
+                    BoxLayout:
+                        size_hint_y: None
+                        height: self.width
+                        Button:
+                            id: linefill_preview_button
+                            background_normal: ''
+                            background_color: 0, 0, 0, 0 
+                            on_release: root.manager.current = 'linefill'
+                            canvas.before:
+                                Color:
+                                    rgba: 1, 1, 1, 1
+                                Rectangle:
+                                    source: 'atlas://assets/images/game_sprites/linefill_preview'
+                                    pos: self.pos
+                                    size: self.size
+                                Color:
+                                    rgba: 0, 0.85, 0.4, 1
+                                Line:
+                                    rectangle: (self.x, self.y, self.width, self.height)
+                                    width: dp(2)
+
+                Widget:
+                    size_hint_y: None
+                    height: dp(10)
+
+# 🟢 FIXED: Updated Placeholder tiles to display a stylized "COMING SOON!" container text box
+<DummyTile@RelativeLayout>:
+    size_hint_y: None
+    height: self.width 
+    canvas.before:
+        Color:
+            rgba: 0, 0.75, 1, 0.15 
+        Rectangle:
+            pos: (0, 0)
+            size: self.size
+        Color:
+            rgba: 0, 0.75, 1, 0.4
+        Line:
+            rectangle: (0, 0, self.width, self.height)
+            width: dp(1)
+    Label:
+        text: "COMING\nSOON!"
+        font_name: "assets/fonts/ARCADE_N.TTF"
+        font_size: '16sp'
+        color: (0, 0.75, 1, 0.6)
+        halign: 'center'
+        valign: 'middle'
+        center_x: root.width / 12
+        center_y: root.height / 12
+
+<SettingsScreen>:
+    RelativeLayout:
+        canvas.before:
+            Color:
+                rgba: 0.04, 0.06, 0.17, 1  # 🟢 Restored Deep Blue (#0A0F2C)
+            Rectangle:
+                pos: self.pos
+                size: self.size
+
+        # Pinned Header Title
+        Label:
+            text: "SETTINGS"
+            font_name: "assets/fonts/ARCADE_N.TTF"
+            font_size: '22sp'
+            color: (0, 0.75, 1, 1)
+            pos_hint: {'center_x': 0.5, 'top': 0.96}
+            size_hint: (1, 0.08)
+
+        # Back to Main Menu Button
+        Button:
+            text: "< MENU"
+            font_name: "assets/fonts/ARCADE_N.TTF"
+            font_size: '10sp'
+            color: (1, 1, 1, 1)
+            size_hint: (0.25, 0.05)
+            pos_hint: {'x': 0.0, 'top': 1.0}
+            background_normal: ''
+            background_color: (0.8, 0.25, 0.25, 1)
+            on_release: root.manager.current = 'menu'
+
+        # ScrollView wrapping single vertical container
+        ScrollView:
+            size_hint: (0.9, 0.82)
+            pos_hint: {'center_x': 0.5, 'top': 0.86}
+            do_scroll_x: False
+            do_scroll_y: True
+
+            BoxLayout:
+                orientation: 'vertical'
+                size_hint_y: None
+                height: self.minimum_height
+                padding: [0, dp(10), 0, dp(20)]
+                spacing: dp(15)
+
+                # 🟢 RESTORED VOLUME LAYOUT (Volume % \n [-] [+] \n Mute)
+                Label:
+                    id: vol_label
+                    text: "VOLUME: 25%"
+                    font_name: "assets/fonts/ARCADE_N.TTF"
+                    font_size: '11sp'
+                    color: (1, 1, 1, 1)
+                    size_hint_y: None
+                    height: dp(25)
+
+                BoxLayout:
+                    orientation: 'horizontal'
+                    spacing: dp(15)
+                    size_hint_y: None
+                    height: dp(45)
+
+                    Button:
+                        text: "-"
+                        font_name: "assets/fonts/ARCADE_N.TTF"
+                        font_size: '16sp'
+                        background_normal: ''
+                        background_color: (0, 0.5, 0.8, 1)
+                        on_release: root.adjust_volume(-0.05)
+
+                    Button:
+                        text: "+"
+                        font_name: "assets/fonts/ARCADE_N.TTF"
+                        font_size: '16sp'
+                        background_normal: ''
+                        background_color: (0, 0.5, 0.8, 1)
+                        on_release: root.adjust_volume(0.05)
+
+                Button:
+                    id: mute_btn
+                    text: "MUTE AUDIO"
+                    font_name: "assets/fonts/ARCADE_N.TTF"
+                    font_size: '10sp'
+                    size_hint_y: None
+                    height: dp(45)
+                    background_normal: ''
+                    background_color: (0.6, 0.2, 0.2, 1)
+                    on_release: root.toggle_mute_state()
+
+                # --- MUSIC TRACK SECTION ---
+                Label:
+                    text: "BACKGROUND MUSIC"
+                    font_name: "assets/fonts/ARCADE_N.TTF"
+                    font_size: '11sp'
+                    color: (0, 0.75, 1, 1)
+                    size_hint_y: None
+                    height: dp(25)
+
+                BoxLayout:
+                    orientation: 'horizontal'
+                    spacing: dp(10)
+                    size_hint_y: None
+                    height: dp(45)
+
+                    Button:
+                        text: "<"
+                        font_name: "assets/fonts/ARCADE_N.TTF"
+                        font_size: '16sp'
+                        size_hint_x: 0.2
+                        background_normal: ''
+                        background_color: (0, 0.75, 1, 0.3)
+                        color: (0, 0.75, 1, 1)
+                        on_release: root.cycle_music(-1)
+
+                    Label:
+                        id: music_label
+                        text: "CLASSIC"
+                        font_name: "assets/fonts/ARCADE_N.TTF"
+                        font_size: '11sp'
+                        color: (1, 1, 1, 1)
+
+                    Button:
+                        text: ">"
+                        font_name: "assets/fonts/ARCADE_N.TTF"
+                        font_size: '16sp'
+                        size_hint_x: 0.2
+                        background_normal: ''
+                        background_color: (0, 0.75, 1, 0.3)
+                        color: (0, 0.75, 1, 1)
+                        on_release: root.cycle_music(1)
+
+                # --- HAPTICS SECTION ---
+                Button:
+                    id: haptic_btn
+                    text: "HAPTICS: ON"
+                    font_name: "assets/fonts/ARCADE_N.TTF"
+                    font_size: '11sp'
+                    size_hint_y: None
+                    height: dp(45)
+                    background_normal: ''
+                    background_color: (0.1, 0.6, 0.3, 1)
+                    on_release: root.toggle_haptics_state()
+
+                # --- DATA RESET SECTION ---
+                Button:
+                    id: reset_btn
+                    text: "RESET SAVE DATA"
+                    font_name: "assets/fonts/ARCADE_N.TTF"
+                    font_size: '11sp'
+                    size_hint_y: None
+                    height: dp(45)
+                    background_normal: ''
+                    background_color: (0.8, 0.2, 0.2, 1)
+                    on_release: root.reset_save_data()
+
+                # --- COLOR BLINDNESS SECTION ---
+                Label:
+                    text: "COLOR BLINDNESS"
+                    font_name: "assets/fonts/ARCADE_N.TTF"
+                    font_size: '11sp'
+                    color: (0, 0.75, 1, 1)
+                    size_hint_y: None
+                    height: dp(25)
+
+                BoxLayout:
+                    orientation: 'horizontal'
+                    spacing: dp(10)
+                    size_hint_y: None
+                    height: dp(45)
+
+                    Button:
+                        text: "<"
+                        font_name: "assets/fonts/ARCADE_N.TTF"
+                        font_size: '16sp'
+                        size_hint_x: 0.2
+                        background_normal: ''
+                        background_color: (0, 0.75, 1, 0.3)
+                        color: (0, 0.75, 1, 1)
+                        on_release: root.cycle_color_blindness(-1)
+
+                    Label:
+                        id: cb_label
+                        text: "NONE"
+                        font_name: "assets/fonts/ARCADE_N.TTF"
+                        font_size: '10sp'
+                        color: (1, 1, 1, 1)
+
+                    Button:
+                        text: ">"
+                        font_name: "assets/fonts/ARCADE_N.TTF"
+                        font_size: '16sp'
+                        size_hint_x: 0.2
+                        background_normal: ''
+                        background_color: (0, 0.75, 1, 0.3)
+                        color: (0, 0.75, 1, 1)
+                        on_release: root.cycle_color_blindness(1)
+
+<AboutScreen>:
+    RelativeLayout:
+        canvas.before:
+            Color:
+                rgba: 0.04, 0.06, 0.17, 1
+            Rectangle:
+                pos: self.pos
+                size: self.size
+
+        Label:
+            text: "ABOUT JBRCADE"
+            font_name: "assets/fonts/ARCADE_N.TTF"
+            font_size: '16sp'
+            color: (0, 0.75, 1, 1)
+            pos_hint: {'center_x': 0.5, 'center_y': 0.88}
+
+        ScrollView:
+            size_hint: (0.85, 0.60)
+            pos_hint: {'center_x': 0.5, 'center_y': 0.50}
+            do_scroll_x: False
+            do_scroll_y: True
+
+            Label:
+                text: "Welcome to JBRCADE!\n\nWhat started as a selfish project has very quickly become a passion project that I would love to see in the hands of others. As someone who is frequently on the move and, more often than not, without internet access, I have been on a long quest to find something that is not only offline but also free and engaging. After being hit with many paywalls and pop-up ads, I finally concluded that if I wanted this, I would have to make it myself. And so, here I am.\n\nI cannot promise you will experience growth in your recall, reaction speed, or problem-solving. What I can promise you is a simple, compact collection of mini-games that will keep you busy when nothing else demands your attention. As someone always seeking a challenge and a chance to sharpen their mental edge, I have found great pleasure in building this project and putting it to the test. My only hope is that you will find this pleasure too.\n\nMuch love\nJBR"
+                font_name: "assets/fonts/ARCADE_N.TTF"
+                font_size: '10sp'
+                color: (1, 1, 1, 1)
+                line_height: 1.35
+                size_hint_y: None
+                height: self.texture_size[1]
+                text_size: (self.width, None)
+                halign: 'center'
+                valign: 'top'
+
+        Button:
+            text: "< BACK TO DASHBOARD"
+            font_name: "assets/fonts/ARCADE_N.TTF"
+            font_size: '9sp'
+            size_hint: (0.65, 0.06)
+            pos_hint: {'center_x': 0.5, 'center_y': 0.12}
+            background_normal: ''
+            background_color: (0.8, 0.25, 0.25, 1)
+            on_release: root.manager.current = 'menu'

@@ -1,0 +1,22 @@
+# Buildozer & Android build outputs
+.buildozer/
+src/.buildozer/
+bin/
+
+# Pygbag & Web builds
+src/build/
+build/
+*.tar.gz
+
+# Python caches and bytecode
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+
+# OS/IDE generated files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

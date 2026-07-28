@@ -1,0 +1,31 @@
+{
+    "game_sprites.png": {
+        "tile_preview": [2,923,100,100],
+        "focus_flash_preview": [208,613,84,84],
+        "planet_hopper_preview": [104,923,100,100],
+        "stroop_match_preview": [2,595,102,102],
+        "air_traffic_preview": [206,923,100,100],
+        "code_capture_preview": [104,821,100,100],
+        "point_velocity_preview": [242,711,108,108],
+        "consecutive_shapes_preview": [308,923,100,100],
+        "matrix_recall_preview": [352,717,102,102],
+        "rotational_maze_preview": [206,821,100,100],
+        "sinky_stone_preview": [106,597,100,100],
+        "grid_lock_preview": [308,821,100,100],
+        "against_grain_preview": [124,703,116,116],
+        "higher_equation_preview": [2,699,120,120],
+        "whats_next_preview": [294,617,80,80],
+        "waiter_waiter_preview": [2,821,100,100],
+        "settings_preview": [376,617,80,80],
+        "gate_keeper_preview": [2,493,100,100],
+        "drop_off_preview": [104,493,100,100],
+        "about_preview": [458,617,80,80],
+        "zen_breathing_preview": [206,493,100,100],
+        "screenshot_preview": [308,493,100,100],
+        "linefill_preview": [410,493,100,100],
+        "math_invaders_preview": [512,469,124,124],
+        "sequence_switch_preview": [638,479,114,114],
+        "tile_turnpike_preview": [754,487,106,106],
+        "neon_python_preview": [862,485,108,108]
+    }
+}

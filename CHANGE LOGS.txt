@@ -1,0 +1,6 @@
+V0.9.1:
+* Added color blindness correction accessibility
+* Updated home UI layout
+* Planet Hopper: Fixed some difficulty scaling issues
+* Added math game "Math Invader"
+* Added 3 wind-down games: "Just Breathe," "Star Catch," and "Line Fill."

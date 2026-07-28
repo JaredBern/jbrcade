@@ -1,0 +1,16 @@
+services:
+  buildozer:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      # Maps your app code
+      - ../src:/home/useruser/project
+      # Caches Buildozer's Android SDK/NDK downloads on your local machine
+      - buildozer_cache:/home/useruser/.buildozer
+    working_dir: /home/useruser/project
+    stdin_open: true
+    tty: true
+
+volumes:
+  buildozer_cache:
