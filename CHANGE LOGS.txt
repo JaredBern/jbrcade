@@ -1,6 +1,21 @@
-V0.9.1:
+v0.9.1:
 * Added color blindness correction accessibility
 * Updated home UI layout
 * Planet Hopper: Fixed some difficulty scaling issues
-* Added math game "Math Invader"
-* Added 3 wind-down games: "Just Breathe," "Star Catch," and "Line Fill."
+* Added a new math game: 'Math Invader'
+* Added 3 wind-down games: 'Just Breathe,' 'Star Catch,' and 'Line Fill'
+
+v0.9.2:
+* Fixed 'JBRCADE' header not working properly
+* Added varying aspect ratio scaling
+* Added achievements (Currently only for Toasty Mallow)
+* Fixed 'reset save data' button not working properly
+* Fixed color inconsistencies in the Settings screen
+* Added 2 new difficulties to 'Focus Flash'
+* Fixed a bug in 'Focus Flash' causing cards to overlap
+* Added 2 new Speed games: 'Lock Pick' and 'Rapid Reader'
+* Moved 'Against Grain' to the Speed category
+* Added 1 new Math game: 'Sequence Switch'
+* Added 1 new Visual-Spatial game: 'Grid Runner'
+* Added 1 new Arcade game: Neon Python
+

@@ -8,6 +8,7 @@ from kivy.uix.scatter import Scatter
 from kivy.core.window import Window
 from kivy.lang import Builder
 from kivy.clock import Clock
+from kivy.storage.jsonstore import JsonStore
 from kivy.utils import platform
 from kivy.animation import Animation
 try:
@@ -26,6 +27,7 @@ from kivy.uix.textinput import TextInput
 from kivy.uix.scrollview import ScrollView
 from kivy.uix.effectwidget import EffectWidget, EffectBase
 from kivy.uix.spinner import Spinner
+from kivy.uix.modalview import ModalView
 
 # Kivy Multimedia & Metrics
 from kivy.uix.image import Image
@@ -39,6 +41,7 @@ from kivy.graphics.instructions import InstructionGroup
 from kivy.graphics import PushMatrix, PopMatrix, Rotate
 #from kivy.graphics.rendercontext import RenderContext
 #from kivy.graphics.fbo import Fbo
+from kivy.graphics.texture import Texture
 
 # Python Native Standard Libraries
 import math
@@ -49,11 +52,207 @@ from collections import deque
 import sys
 import json
 import asyncio
+from datetime import datetime
+
+from kivy.factory import Factory
+from scaling import Scale
+Factory.register('Scale', cls=Scale)
+
+from kivy.properties import StringProperty
 
 # Web assembly check
 IS_WEB = sys.platform == "emscripten"
 if IS_WEB:
     from platform import window
+    
+def get_shared_data_path() -> str:
+    """Returns a shared path accessible by both CASINO ARCADE and JBRCADE."""
+    if platform == 'android':
+        from jnius import autoclass
+        Environment = autoclass('android.os.Environment')
+        base_dir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS).getAbsolutePath()
+        shared_dir = os.path.join(base_dir, "JBRCADE")
+    else:
+        # PC Fallback: Home directory shared folder
+        shared_dir = os.path.join(os.path.expanduser("~"), ".arcade_shared_data")
+    
+    os.makedirs(shared_dir, exist_ok=True)
+    return os.path.join(shared_dir, "jbrcade_shared_data.json")
+
+def record_jbrcade_game_score(game_id: str, score: int):
+    """Call this on game-over in JBRCADE games to post scores for Casino Arcade."""
+    shared_path = get_shared_data_path()
+    data = {}
+    try:
+        if os.path.exists(shared_path):
+            with open(shared_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+    except Exception:
+        data = {}
+
+    game_scores = data.get('game_scores', {})
+    current_best = game_scores.get(game_id, 0)
+    
+    # Update total accumulated score or high score
+    game_scores[game_id] = max(current_best, score)
+    data['game_scores'] = game_scores
+
+    try:
+        with open(shared_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=4)
+    except Exception as e:
+        print(f"Failed to record JBRCADE shared score: {e}")
+
+# Place this near the top of main.py (below web_load_game_data / trigger_haptic_feedback)
+def apply_theme_background(screen):
+    """Updates background color, header banner color, text colors, and seasonal badges."""
+    '''app = App.get_running_app()
+    if not app:
+        return'''
+    app = App.get_running_app()
+    if app:
+        app.update_active_atlas_prefix()
+
+    is_christmas = app.is_christmas_active() if hasattr(app, 'is_christmas_active') else False
+    is_halloween = app.is_halloween_active() if hasattr(app, 'is_halloween_active') and not is_christmas else False
+
+    # --- 1. DETERMINE THEME COLORS ---
+    if is_christmas:
+        bg_color = app.get_primary_bg_color()   # Classic Dark Blue (#0A0F2C)
+        border_color = (0.75, 0.1, 0.1, 1)      # Deep Red (Borders)
+        text_color = (0.1, 0.55, 0.2, 1)        # Pine Green (Text)
+        banner_color = (0.75, 0.85, 1.0, 1)     # Frosty White-Blue (Header & Line)
+    elif is_halloween:
+        bg_color = (0.12, 0.04, 0.22, 1)        # Spooky Purple
+        border_color = (1.0, 0.5, 0.0, 1)      # Pumpkin Orange
+        text_color = (1.0, 0.5, 0.0, 1)        # Pumpkin Orange
+        banner_color = (1.0, 0.5, 0.0, 1)      # Pumpkin Orange
+    else:
+        bg_color = app.get_primary_bg_color()   # Classic Dark Blue
+        border_color = app.get_accent_color()   # Arcade Cyan
+        text_color = app.get_accent_color()     # Arcade Cyan
+        banner_color = app.get_accent_color()   # Arcade Cyan
+
+    # --- 2. UPDATE SCREEN BACKGROUND ---
+    target_canvas = screen.canvas.before
+    if screen.children:
+        target_canvas = screen.children[0].canvas.before
+
+    found_color = None
+    found_rect = None
+
+    for instr in target_canvas.children:
+        if isinstance(instr, Color) and not found_color:
+            found_color = instr
+        elif isinstance(instr, Rectangle) and not found_rect:
+            found_rect = instr
+
+    if not found_color or not found_rect:
+        with target_canvas:
+            found_color = Color(*bg_color)
+            found_rect = Rectangle(pos=screen.pos, size=screen.size)
+
+    found_color.rgb = bg_color[:3]
+    found_rect.pos = screen.pos
+    found_rect.size = screen.size
+
+    # --- 3. MAIN MENU SPECIFIC THEMING & ACCENT LINES ---
+    if screen.name == 'menu':
+        # Retrieve header banner widget instance safely from screen.ids
+        header_banner_widget = screen.ids.get('header_banner_bg')
+
+        # Repaint Header Banner Background & Line Accents
+        if header_banner_widget and hasattr(header_banner_widget, 'canvas') and header_banner_widget.canvas.before:
+            children = header_banner_widget.canvas.before.children
+            for i, instr in enumerate(children):
+                if isinstance(instr, Color):
+                    # Look ahead through remaining instructions to see if this Color drives a Rectangle or a Line
+                    is_line_color = False
+                    for j in range(i + 1, len(children)):
+                        if isinstance(children[j], Line):
+                            is_line_color = True
+                            break
+                        elif isinstance(children[j], Rectangle) or isinstance(children[j], Color):
+                            break
+                    
+                    if is_line_color:
+                        instr.rgb = banner_color[:3]  # Accent divider line gets banner_color (Cyan/Orange/Frosty)
+                    else:
+                        instr.rgb = bg_color[:3]      # Banner background gets dark primary color
+
+        def theme_widget_tree(widget):
+            # A) Update Text Labels
+            if isinstance(widget, Label):
+                if "WIND DOWN" not in widget.text:
+                    # Title gets banner_color (Frosty White-Blue during Christmas)
+                    if "JBRCADE" in widget.text or (header_banner_widget and widget in header_banner_widget.children):
+                        widget.color = banner_color
+                    else:
+                        widget.color = text_color
+
+            # B) Theme Canvas Lines / Tile Borders
+            if hasattr(widget, 'canvas') and widget.canvas.before:
+                # Skip the header banner widget so its divider line isn't overwritten as a tile border
+                if widget != header_banner_widget:
+                    children = widget.canvas.before.children
+                    for i, instr in enumerate(children):
+                        if isinstance(instr, Line):
+                            # Look backward through instructions to find driving Color
+                            for j in range(i - 1, -1, -1):
+                                if isinstance(children[j], Color):
+                                    children[j].rgb = border_color[:3]
+                                    break
+
+            # Recurse through all child nodes
+            if hasattr(widget, 'children') and widget.children:
+                for child in widget.children:
+                    theme_widget_tree(child)
+
+        theme_widget_tree(screen)
+
+        # C) Attach Seasonal Badges to Active Seasonal Tiles
+        if is_halloween and 'halloween_game_preview_button' in screen.ids:
+            btn = screen.ids.halloween_game_preview_button
+            
+            def update_badge_position(instance, value):
+                btn.canvas.after.clear()
+                if btn.width <= 1 or btn.height <= 1:
+                    return
+                    
+                with btn.canvas.after:
+                    Color(1, 1, 1, 1)
+                    badge_sz = Scale.min_dim(0.06)
+                    Rectangle(
+                        source='atlas://assets/images/game_sprites/halloween_badge',
+                        pos=(btn.right - badge_sz - dp(4) + 10, btn.top - badge_sz - dp(4) + 10),
+                        size=(badge_sz, badge_sz)
+                    )
+
+            btn.unbind(pos=update_badge_position, size=update_badge_position)
+            btn.bind(pos=update_badge_position, size=update_badge_position)
+            Clock.schedule_once(lambda dt: update_badge_position(btn, None), 0.05)
+
+        # 🟢 ADDED: Christmas Badge Binding for Sleigh Drop Tile
+        if is_christmas and 'christmas_game_preview_button' in screen.ids:
+            btn = screen.ids.christmas_game_preview_button
+            
+            def update_christmas_badge_position(instance, value):
+                btn.canvas.after.clear()
+                if btn.width <= 1 or btn.height <= 1:
+                    return
+                    
+                with btn.canvas.after:
+                    Color(1, 1, 1, 1)
+                    badge_sz = Scale.min_dim(0.06)
+                    Rectangle(
+                        source='atlas://assets/images/game_sprites/christmas_badge',
+                        pos=(btn.right - badge_sz - dp(4) + 10, btn.top - badge_sz - dp(4) + 10),
+                        size=(badge_sz, badge_sz)
+                    )
+
+            btn.unbind(pos=update_christmas_badge_position, size=update_christmas_badge_position)
+            btn.bind(pos=update_christmas_badge_position, size=update_christmas_badge_position)
+            Clock.schedule_once(lambda dt: update_christmas_badge_position(btn, None), 0.05)
 
 def web_load_game_data(key_name, default_val=0):
     """Loads save data from browser LocalStorage or local JSON file."""
@@ -203,40 +402,222 @@ class SettingsScreen(Screen):
         super().__init__(**kwargs)
         self.pre_mute_volume = 0.5
         self.is_muted = False
-        self.tracks = ['CLASSIC', 'HARDCORE', 'CHILL']
+        self.tracks = ['CLASSIC', 'HARDCORE', 'CHILL', 'HALLOWEEN']
         self.cb_modes = ['NONE', 'PROTANOPIA', 'DEUTERANOPIA', 'TRITANOPIA', 'MONOCHROME']
 
-    def on_pre_enter(self, *args):
-        app = App.get_running_app()
-        
-        # Sync Volume Label & Mute Button
-        if app.bg_track:
-            vol_pct = int(round(app.bg_track.volume * 100))
-            self.ids.vol_label.text = f"VOLUME: {vol_pct}%"
-            if app.bg_track.volume == 0:
-                self.ids.mute_btn.text = "UNMUTE AUDIO"
-                self.ids.mute_btn.background_color = (0.1, 0.6, 0.3, 1)
-            else:
-                self.ids.mute_btn.text = "MUTE AUDIO"
-                self.ids.mute_btn.background_color = (0.6, 0.2, 0.2, 1)
-                
-        # 🟢 Sync Haptic Button State
-        if hasattr(self.ids, 'haptic_btn'):
-            if app.haptics_enabled:
-                self.ids.haptic_btn.text = "HAPTICS: ON"
-                self.ids.haptic_btn.background_color = (0.1, 0.6, 0.3, 1)
-            else:
-                self.ids.haptic_btn.text = "HAPTICS: OFF"
-                self.ids.haptic_btn.background_color = (0.6, 0.2, 0.2, 1)
+        # 1. Base Layout
+        self.layout = RelativeLayout()
+        self.add_widget(self.layout)
 
-        # 🟢 Sync Music Track Label
-        if hasattr(self.ids, 'music_label'):
-            self.ids.music_label.text = app.current_music_name
+        # 2. Dynamic Canvas Background (Managed in Python)
+        with self.canvas.before:
+            Color(0.04, 0.06, 0.17, 1)
+            self.bg_rect = Rectangle(pos=self.pos, size=self.size)
+        self.bind(pos=self.update_bg, size=self.update_bg)
+
+        # 3. Pinned Header
+        self.title_label = Label(
+            text="SETTINGS",
+            font_name='assets/fonts/ARCADE_N.TTF',
+            font_size='22sp',
+            color=(0, 0.75, 1, 1),
+            pos_hint={'center_x': 0.5, 'top': 0.96},
+            size_hint=(1, 0.08)
+        )
+        self.layout.add_widget(self.title_label)
+
+        # 4. Back Button
+        self.back_btn = Button(
+            text="< MENU",
+            font_name='assets/fonts/ARCADE_N.TTF',
+            font_size='10sp',
+            color=(1, 1, 1, 1),
+            size_hint=(0.25, 0.05),
+            pos_hint={'x': 0.0, 'top': 1.0},
+            background_normal='',
+            background_color=(0.8, 0.25, 0.25, 1)
+        )
+        self.back_btn.bind(on_release=self.go_back_to_menu)
+        self.layout.add_widget(self.back_btn)
+
+        # 5. Scrollable Options List
+        self.scroll_view = ScrollView(
+            size_hint=(0.9, 0.82),
+            pos_hint={'center_x': 0.5, 'top': 0.86},
+            do_scroll_x=False,
+            do_scroll_y=True
+        )
+        self.layout.add_widget(self.scroll_view)
+
+        self.options_box = BoxLayout(
+            orientation='vertical',
+            size_hint_y=None,
+            spacing=dp(15),
+            padding=[0, dp(10), 0, dp(20)]
+        )
+        self.options_box.bind(minimum_height=self.options_box.setter('height'))
+        self.scroll_view.add_widget(self.options_box)
+
+        # --- OPTION 1: Seasonal UI Toggle Button ---
+        self.seasonal_btn = Button(
+            text="SEASONAL UI: ON",
+            font_name='assets/fonts/ARCADE_N.TTF',
+            font_size='12sp',
+            size_hint_y=None,
+            height=dp(45),
+            background_normal='',
+            background_color=(0.1, 0.6, 0.3, 1)
+        )
+        self.seasonal_btn.bind(on_release=lambda x: self.toggle_seasonal_ui())
+        self.options_box.add_widget(self.seasonal_btn)
+
+        # --- OPTION 2: Volume Controls ---
+        self.vol_label = Label(
+            text="VOLUME: 50%",
+            font_name='assets/fonts/ARCADE_N.TTF',
+            font_size='12sp',
+            color=(1, 1, 1, 1),
+            size_hint_y=None,
+            height=dp(25)
+        )
+        self.options_box.add_widget(self.vol_label)
+
+        vol_btn_row = BoxLayout(orientation='horizontal', spacing=dp(15), size_hint_y=None, height=dp(45))
+        minus_btn = Button(text="-", font_name='assets/fonts/ARCADE_N.TTF', font_size='16sp', background_normal='', background_color=(0, 0.5, 0.8, 1))
+        minus_btn.bind(on_release=lambda x: self.adjust_volume(-0.05))
+        plus_btn = Button(text="+", font_name='assets/fonts/ARCADE_N.TTF', font_size='16sp', background_normal='', background_color=(0, 0.5, 0.8, 1))
+        plus_btn.bind(on_release=lambda x: self.adjust_volume(0.05))
+        vol_btn_row.add_widget(minus_btn)
+        vol_btn_row.add_widget(plus_btn)
+        self.options_box.add_widget(vol_btn_row)
+
+        self.mute_btn = Button(
+            text="MUTE AUDIO", font_name='assets/fonts/ARCADE_N.TTF', font_size='12sp',
+            size_hint_y=None, height=dp(45), background_normal='', background_color=(0.8, 0.2, 0.2, 1)
+        )
+        self.mute_btn.bind(on_release=lambda x: self.toggle_mute_state())
+        self.options_box.add_widget(self.mute_btn)
+
+        # --- OPTION 3: Background Music Track ---
+        self.options_box.add_widget(Label(
+            text="BACKGROUND MUSIC", font_name='assets/fonts/ARCADE_N.TTF', font_size='12sp',
+            color=(0, 0.75, 1, 1), size_hint_y=None, height=dp(25)
+        ))
+        music_row = BoxLayout(orientation='horizontal', spacing=dp(10), size_hint_y=None, height=dp(45))
+        prev_music = Button(text="<", font_name='assets/fonts/ARCADE_N.TTF', font_size='12sp', size_hint_x=0.2, background_normal='', background_color=(0, 0.75, 1, 0.3), color=(0, 0.75, 1, 1))
+        prev_music.bind(on_release=lambda x: self.cycle_music(-1))
+        self.music_label = Label(text="CLASSIC", font_name='assets/fonts/ARCADE_N.TTF', font_size='12sp', color=(1, 1, 1, 1))
+        next_music = Button(text=">", font_name='assets/fonts/ARCADE_N.TTF', font_size='12sp', size_hint_x=0.2, background_normal='', background_color=(0, 0.75, 1, 0.3), color=(0, 0.75, 1, 1))
+        next_music.bind(on_release=lambda x: self.cycle_music(1))
+        music_row.add_widget(prev_music)
+        music_row.add_widget(self.music_label)
+        music_row.add_widget(next_music)
+        self.options_box.add_widget(music_row)
+
+        # --- OPTION 4: Haptics Toggle ---
+        self.haptic_btn = Button(
+            text="HAPTICS: ON", font_name='assets/fonts/ARCADE_N.TTF', font_size='12sp',
+            size_hint_y=None, height=dp(45), background_normal='', background_color=(0.1, 0.6, 0.3, 1)
+        )
+        self.haptic_btn.bind(on_release=lambda x: self.toggle_haptics_state())
+        self.options_box.add_widget(self.haptic_btn)
+
+        # --- OPTION 5: Reset Save Data ---
+        self.reset_btn = Button(
+            text="RESET SAVE DATA", font_name='assets/fonts/ARCADE_N.TTF', font_size='12sp',
+            size_hint_y=None, height=dp(45), background_normal='', background_color=(0.8, 0.2, 0.2, 1)
+        )
+        self.reset_btn.bind(on_release=lambda x: self.reset_save_data())
+        self.options_box.add_widget(self.reset_btn)
+
+        # --- OPTION 6: Color Blindness ---
+        self.options_box.add_widget(Label(
+            text="COLOR BLINDNESS", font_name='assets/fonts/ARCADE_N.TTF', font_size='12sp',
+            color=(0, 0.75, 1, 1), size_hint_y=None, height=dp(25)
+        ))
+        cb_row = BoxLayout(orientation='horizontal', spacing=dp(10), size_hint_y=None, height=dp(45))
+        prev_cb = Button(text="<", font_name='assets/fonts/ARCADE_N.TTF', font_size='12sp', size_hint_x=0.2, background_normal='', background_color=(0, 0.75, 1, 0.3), color=(0, 0.75, 1, 1))
+        prev_cb.bind(on_release=lambda x: self.cycle_color_blindness(-1))
+        self.cb_label = Label(text="NONE", font_name='assets/fonts/ARCADE_N.TTF', font_size='12sp', color=(1, 1, 1, 1))
+        next_cb = Button(text=">", font_name='assets/fonts/ARCADE_N.TTF', font_size='12sp', size_hint_x=0.2, background_normal='', background_color=(0, 0.75, 1, 0.3), color=(0, 0.75, 1, 1))
+        next_cb.bind(on_release=lambda x: self.cycle_color_blindness(1))
+        cb_row.add_widget(prev_cb)
+        cb_row.add_widget(self.cb_label)
+        cb_row.add_widget(next_cb)
+        self.options_box.add_widget(cb_row)
+        
+    def get_available_tracks(self):
+        """Returns active tracks depending on whether Halloween or Christmas mode is active."""
+        app = App.get_running_app()
+        tracks = ['CLASSIC', 'HARDCORE', 'CHILL']
+        if app:
+            if app.is_halloween_active():
+                tracks.append('HALLOWEEN')
+            if app.is_christmas_active():
+                tracks.append('CHRISTMAS')
+        return tracks
+
+    def update_bg(self, *args):
+        self.bg_rect.pos = self.pos
+        self.bg_rect.size = self.size
+        apply_theme_background(self)
+
+    def go_back_to_menu(self, instance):
+        self.manager.current = 'menu'
+
+    def on_pre_enter(self, *args):
+        apply_theme_background(self)
+        self.sync_ui_with_app_state()
+
+    def sync_ui_with_app_state(self):
+        app = App.get_running_app()
+        if not app: return
+
+        if app.bg_track:
+            if app.is_muted or app.bg_track.volume == 0:
+                self.vol_label.text = "VOLUME: MUTED"
+                self.mute_btn.text = "UNMUTE AUDIO"
+                self.mute_btn.background_color = (0.1, 0.6, 0.3, 1)
+            else:
+                vol_pct = int(round(app.bg_track.volume * 100))
+                self.vol_label.text = f"VOLUME: {vol_pct}%"
+                self.mute_btn.text = "MUTE AUDIO"
+                self.mute_btn.background_color = (0.8, 0.2, 0.2, 1)
+
+        if app.haptics_enabled:
+            self.haptic_btn.text = "HAPTICS: ON"
+            self.haptic_btn.background_color = (0.1, 0.6, 0.3, 1)
+        else:
+            self.haptic_btn.text = "HAPTICS: OFF"
+            self.haptic_btn.background_color = (0.8, 0.2, 0.2, 1)
+
+        self.music_label.text = app.current_music_name
+        self.cb_label.text = app.color_blind_mode
             
-        # 🟢 Sync Color Blindness Mode Label
-        if hasattr(self.ids, 'cb_label'):
-            self.ids.cb_label.text = app.color_blind_mode
-            
+        if app.seasonal_ui_enabled:
+            self.seasonal_btn.text = "SEASONAL UI: ON"
+            self.seasonal_btn.background_color = (0.1, 0.6, 0.3, 1)
+        else:
+            self.seasonal_btn.text = "SEASONAL UI: OFF"
+            self.seasonal_btn.background_color = (0.8, 0.2, 0.2, 1)
+
+    def toggle_seasonal_ui(self):
+        app = App.get_running_app()
+        app.seasonal_ui_enabled = not app.seasonal_ui_enabled
+        app.save_seasonal_settings()
+
+        # Revert track to CLASSIC if seasonal UI is turned off while playing a seasonal song
+        if not app.seasonal_ui_enabled and app.current_music_name in ['CHRISTMAS', 'HALLOWEEN']:
+            app.switch_music_track('CLASSIC')
+
+        # Re-apply theme background across current and main menu screens
+        apply_theme_background(self)
+        if app.sm and app.sm.has_screen('menu'):
+            apply_theme_background(app.sm.get_screen('menu'))
+
+        self.sync_ui_with_app_state()
+        trigger_haptic_feedback(0.08)
+
     def cycle_color_blindness(self, direction):
         app = App.get_running_app()
         current_idx = self.cb_modes.index(app.color_blind_mode)
@@ -244,18 +625,22 @@ class SettingsScreen(Screen):
         new_mode = self.cb_modes[new_idx]
         
         app.save_color_blind_setting(new_mode)
-        self.ids.cb_label.text = new_mode
+        self.cb_label.text = new_mode  # 🟢 FIXED: Reference self.cb_label directly
         app.apply_color_blind_filter(new_mode)
 
     def cycle_music(self, direction):
         app = App.get_running_app()
-        current_idx = self.tracks.index(app.current_music_name)
-        new_idx = (current_idx + direction) % len(self.tracks)
-        new_track_name = self.tracks[new_idx]
+        available_tracks = self.get_available_tracks()
         
-        # Update App state and playback
+        # Fallback if current track isn't in available list
+        current_name = app.current_music_name if app.current_music_name in available_tracks else available_tracks[0]
+        current_idx = available_tracks.index(current_name)
+        
+        new_idx = (current_idx + direction) % len(available_tracks)
+        new_track_name = available_tracks[new_idx]
+        
         app.switch_music_track(new_track_name)
-        self.ids.music_label.text = new_track_name
+        self.music_label.text = new_track_name
 
     def toggle_haptics_state(self):
         app = App.get_running_app()
@@ -268,65 +653,68 @@ class SettingsScreen(Screen):
             trigger_haptic_feedback(0.08)
         else:
             self.ids.haptic_btn.text = "HAPTICS: OFF"
-            self.ids.haptic_btn.background_color = (0.6, 0.2, 0.2, 1)
+            self.ids.haptic_btn.background_color = (0.8, 0.2, 0.2, 1)
 
     def adjust_volume(self, delta_modifier):
         app = App.get_running_app()
         if not app.bg_track: return
 
-        self.is_muted = False
+        app.is_muted = False
         new_vol = max(0.0, min(1.0, app.bg_track.volume + delta_modifier))
         app.bg_track.volume = round(new_vol, 2)
+        app.save_audio_settings()
         
-        vol_pct = int(round(app.bg_track.volume * 100))
-        self.ids.vol_label.text = f"VOLUME: {vol_pct}%"
-        
-        self.ids.mute_btn.text = "MUTE AUDIO" if new_vol > 0 else "UNMUTE AUDIO"
-        self.ids.mute_btn.background_color = (0.6, 0.2, 0.2, 1) if new_vol > 0 else (0.1, 0.6, 0.3, 1)
+        self.sync_ui_with_app_state()
 
     def toggle_mute_state(self):
         app = App.get_running_app()
-        if not app.bg_track: return
+        if not app or not app.bg_track: 
+            return
 
-        if not self.is_muted:
+        if not app.is_muted:
             self.pre_mute_volume = app.bg_track.volume if app.bg_track.volume > 0 else 0.5
             app.bg_track.volume = 0.0
-            self.is_muted = True
-            self.ids.vol_label.text = "VOLUME: MUTED"
-            self.ids.mute_btn.text = "UNMUTE AUDIO"
-            self.ids.mute_btn.background_color = (0.1, 0.6, 0.3, 1)
+            app.is_muted = True
         else:
             app.bg_track.volume = self.pre_mute_volume
-            self.is_muted = False
-            vol_pct = int(round(app.bg_track.volume * 100))
-            self.ids.vol_label.text = f"VOLUME: {vol_pct}%"
-            self.ids.mute_btn.text = "MUTE AUDIO"
-            self.ids.mute_btn.background_color = (0.6, 0.2, 0.2, 1)
-            
+            app.is_muted = False
+
+        app.save_audio_settings()
+        self.sync_ui_with_app_state()
+
     def reset_save_data(self):
         try:
-            # 1. Delete the file on disk
+            # 1. Remove save_data.json on disk
             if os.path.exists('save_data.json'):
                 os.remove('save_data.json')
 
-            # 2. Reset in-memory score variables across all live screens
+            # 2. Mechanically reset app preferences to defaults
             app = App.get_running_app()
-            if app and app.root:
-                for screen in app.root.screens:
-                    # Clear high score attribute on the screen instance
-                    if hasattr(screen, 'high_score'):
-                        # Baseline start round is 1 for round-based games, 0 for points
-                        if screen.name in ['focus_flash', 'planet_hopper', 'air_traffic', 'rotational_maze']:
-                            screen.high_score = 1
-                        else:
-                            screen.high_score = 0
-                    
-                    # Force screen to refresh its saved state & UI labels
-                    if hasattr(screen, 'load_high_score'):
-                        screen.load_high_score()
-                    if hasattr(screen, 'update_difficulty_ui'):
-                        screen.update_difficulty_ui()
+            if app:
+                app.color_blind_mode = 'NONE'
+                app.haptics_enabled = True
+                app.is_muted = False
+                
+                # Reset music track to CLASSIC
+                app.switch_music_track('CLASSIC')
+                if app.bg_track:
+                    app.bg_track.volume = 0.5
+                app.apply_color_blind_filter('NONE')
 
+                # Reset high scores in all screen instances
+                if app.sm:
+                    for screen in app.sm.screens:
+                        if hasattr(screen, 'high_score'):
+                            screen.high_score = 1 if screen.name in ['focus_flash', 'planet_hopper', 'air_traffic', 'rotational_maze'] else 0
+                        if hasattr(screen, 'load_high_score'):
+                            screen.load_high_score()
+                        if hasattr(screen, 'update_difficulty_ui'):
+                            screen.update_difficulty_ui()
+
+            # 3. Visually revert all Settings screen buttons/labels
+            self.sync_ui_with_app_state()
+
+            # 4. Trigger feedback button text
             trigger_haptic_feedback(0.12)
             if hasattr(self.ids, 'reset_btn'):
                 self.ids.reset_btn.text = "DATA CLEARED!"
@@ -338,23 +726,601 @@ class AboutScreen(Screen):
     # 🟢 FIXED RESET LIFE-CYCLE: Ensures the screen state refreshes safely on entry transitions
     def on_pre_enter(self, *args):
         pass
+    
+class AchievementsScreen(Screen):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.layout = RelativeLayout()
+        self.add_widget(self.layout)
+
+        # 1. Background
+        with self.canvas.before:
+            Color(0.04, 0.06, 0.17, 1)
+            self.bg_rect = Rectangle(pos=self.pos, size=self.size)
+        self.bind(pos=self.update_bg, size=self.update_bg)
+
+        # 2. Header
+        self.title_label = Label(
+            text="ACHIEVEMENTS",
+            font_name='assets/fonts/ARCADE_N.TTF',
+            font_size=Scale.font(18),
+            color=(0, 0.75, 1, 1),
+            pos_hint={'center_x': 0.5, 'top': 0.95},
+            size_hint=(1, 0.08)
+        )
+        self.layout.add_widget(self.title_label)
+
+        # 3. Back Button
+        self.back_btn = Button(
+            text="< MENU",
+            font_name='assets/fonts/ARCADE_N.TTF',
+            font_size=Scale.font(15),
+            size_hint=(0.25, 0.05),
+            pos_hint={'x': 0.0, 'top': 1.0},
+            background_normal='',
+            background_color=(0.8, 0.25, 0.25, 1)
+        )
+        self.back_btn.bind(on_release=self.go_back_to_menu)
+        self.layout.add_widget(self.back_btn)
+
+        # 4. Scrollable Container for Achievement List
+        self.scroll_view = ScrollView(
+            size_hint=(0.95, 0.82),
+            pos_hint={'center_x': 0.5, 'top': 0.85},
+            do_scroll_x=False,
+            do_scroll_y=True
+        )
+        self.layout.add_widget(self.scroll_view)
+
+        self.list_container = BoxLayout(
+            orientation='vertical',
+            size_hint_y=None,
+            spacing=dp(12),
+            padding=[0, dp(10), 0, dp(10)]
+        )
+        self.list_container.bind(minimum_height=self.list_container.setter('height'))
+        self.scroll_view.add_widget(self.list_container)
+
+        # Defined Achievements Registry with Atlas Sprite Paths
+        self.achievements_data = [
+            {
+                'id': 'toasty_normal_15',
+                'title': 'LIGHTLY TOASTED',
+                'desc': 'Score 10 points in Toasty Mallow (Normal Mode).',
+                'sprite': 'atlas://assets/images/game_sprites/toasty_normal_15'
+            },
+            {
+                'id': 'toasty_normal_50',
+                'title': 'MALLOW MASTER',
+                'desc': 'Score 50 points in Toasty Mallow (Normal Mode).',
+                'sprite': 'atlas://assets/images/game_sprites/toasty_normal_50'
+            },
+            {
+                'id': 'toasty_normal_100',
+                'title': 'UNTOASTABLE',
+                'desc': 'Score 100 points in Toasty Mallow (Normal Mode).',
+                'sprite': 'atlas://assets/images/game_sprites/toasty_normal_100'
+            },
+            {
+                'id': 'gatekeeper_flawless_3',
+                'title': 'LUNAR SHIELD',
+                'desc': 'Complete 3 rounds of Gate Keeper without making any mistakes.',
+                'sprite': 'atlas://assets/images/game_sprites/gatekeeper_flawless_3'
+            },
+            {
+                'id': 'gatekeeper_flawless_6',
+                'title': 'CELESTIAL BULWARK',
+                'desc': 'Complete 6 rounds of Gate Keeper without making any mistakes.',
+                'sprite': 'atlas://assets/images/game_sprites/gatekeeper_flawless_6'
+            },
+            {
+                'id': 'gatekeeper_flawless_9',
+                'title': 'INFINITUM AEGIS',
+                'desc': 'Complete 9 rounds of Gate Keeper without making any mistakes.',
+                'sprite': 'atlas://assets/images/game_sprites/gatekeeper_flawless_9'
+            },
+        ]
+
+    def update_bg(self, *args):
+        self.bg_rect.pos = self.pos
+        self.bg_rect.size = self.size
+
+    def on_pre_enter(self, *args):
+        self.render_achievements_list()
+
+    def go_back_to_menu(self, instance):
+        self.manager.current = 'menu'
+
+    def get_unlocked_dict(self):
+        try:
+            if os.path.exists('save_data.json'):
+                with open('save_data.json', 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    return data.get('achievements', {})
+        except Exception:
+            pass
+        return {}
+
+    def render_achievements_list(self):
+        self.list_container.clear_widgets()
+        unlocked_map = self.get_unlocked_dict()
+
+        row_height = Scale.min_dim(0.22)
+        tile_dim = Scale.min_dim(0.18)
+
+        for ach in self.achievements_data:
+            is_unlocked = unlocked_map.get(ach['id'], False)
+
+            # Row Layout
+            row = BoxLayout(
+                orientation='horizontal',
+                size_hint_y=None,
+                height=row_height,
+                spacing=dp(12),
+                padding=[dp(8), 0, dp(8), 0]
+            )
+
+            # Left: Icon Tile Box
+            tile_box = RelativeLayout(size_hint=(None, 1), width=tile_dim)
+            
+            with tile_box.canvas.before:
+                if is_unlocked:
+                    # Renders full atlas texture image when unlocked
+                    Color(1, 1, 1, 1)
+                    Rectangle(
+                        source=ach['sprite'],
+                        pos=(0, (row_height - tile_dim) / 2),
+                        size=(tile_dim, tile_dim)
+                    )
+                else:
+                    # Dark silhouette tile when locked
+                    Color(0.1, 0.12, 0.22, 1)
+                    Rectangle(
+                        pos=(0, (row_height - tile_dim) / 2),
+                        size=(tile_dim, tile_dim)
+                    )
+
+                # Tile Border
+                Color(0, 0.75, 1, 1) if is_unlocked else Color(0.3, 0.3, 0.4, 0.6)
+                Line(
+                    rectangle=(0, (row_height - tile_dim) / 2, tile_dim, tile_dim),
+                    width=dp(2)
+                )
+
+            row.add_widget(tile_box)
+
+            # Right: Text Details Column
+            text_box = BoxLayout(orientation='vertical', spacing=dp(4))
+            
+            title_lbl = Label(
+                text=ach['title'] if is_unlocked else "??? LOCKED ???",
+                font_name='assets/fonts/ARCADE_N.TTF',
+                font_size=Scale.font(12),
+                color=(1, 0.84, 0, 1) if is_unlocked else (0.5, 0.5, 0.6, 1),
+                halign='left',
+                valign='bottom',
+                size_hint_y=0.45
+            )
+            title_lbl.bind(size=title_lbl.setter('text_size'))
+
+            desc_lbl = Label(
+                text=ach['desc'],
+                font_name='assets/fonts/ARCADE_N.TTF',
+                font_size=Scale.font(8),
+                color=(1, 1, 1, 1) if is_unlocked else (0.4, 0.4, 0.5, 1),
+                halign='left',
+                valign='top',
+                size_hint_y=0.55
+            )
+            desc_lbl.bind(size=desc_lbl.setter('text_size'))
+
+            text_box.add_widget(title_lbl)
+            text_box.add_widget(desc_lbl)
+            row.add_widget(text_box)
+
+            self.list_container.add_widget(row)
 
 class MainMenuScreen(Screen):
-    def on_enter(self):
-        if 'tile_preview_button' in self.ids:
-            btn_texture = self.ids.tile_preview_button.canvas.before.children[-1].texture
-            if btn_texture:
-                btn_texture.mag_filter = 'nearest'
-                btn_texture.min_filter = 'nearest'
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.tap_count = 0
+        self.reset_event = None
+        self.pause_event = None
+
+        # Particle Engine Setup
+        self.particles = []
+        self.particle_event = None
+        self.glow_anim = None
+        
+    def sync_seasonal_tiles(self):
+        app = App.get_running_app()
+        is_halloween = app and app.is_halloween_active()
+        is_christmas = app and app.is_christmas_active()
+
+        # Halloween Preview Tile
+        if 'halloween_game_tile_container' in self.ids:
+            container = self.ids.halloween_game_tile_container
+            btn = self.ids.halloween_game_preview_button
+
+            if is_halloween:
+                container.opacity = 1
+                container.disabled = False
+                btn.disabled = False
+            else:
+                container.opacity = 0
+                container.disabled = True
+                btn.disabled = True
+
+        # Christmas Preview Tile (Sleigh Drop)
+        if 'christmas_game_tile_container' in self.ids:
+            container = self.ids.christmas_game_tile_container
+            btn = self.ids.christmas_game_preview_button
+
+            if is_christmas:
+                container.opacity = 1
+                container.disabled = False
+                btn.disabled = False
+            else:
+                container.opacity = 0
+                container.disabled = True
+                btn.disabled = True
+
+    def on_pre_enter(self, *args):
+        apply_theme_background(self)
+        self.sync_seasonal_tiles()
+        self.start_seasonal_effects()
+
+    def on_leave(self, *args):
+        self.stop_seasonal_effects()
+
+    def start_seasonal_effects(self):
+        app = App.get_running_app()
+        if not app:
+            self.stop_seasonal_effects()
+            return
+
+        is_christmas = getattr(app, 'is_christmas_active', lambda: False)()
+        is_halloween = getattr(app, 'is_halloween_active', lambda: False)()
+
+        # If no seasonal mode is active, ensure all effects are stopped
+        if not is_christmas and not is_halloween:
+            self.stop_seasonal_effects()
+            return
+
+        # 1. Pulsing Header Glow (HALLOWEEN ONLY)
+        if is_halloween and 'jbrcade_title_label' in self.ids and not self.glow_anim:
+            lbl = self.ids.jbrcade_title_label
+            glow_color = (1.0, 0.65, 0.1, 1.0)
+            dim_color = (1.0, 0.35, 0.0, 0.8)
+            
+            self.glow_anim = (
+                Animation(color=glow_color, duration=1.2, t='in_out_quad') + 
+                Animation(color=dim_color, duration=1.2, t='in_out_quad')
+            )
+            self.glow_anim.repeat = True
+            self.glow_anim.start(lbl)
+
+        # 2. Spawn Floating Particles (Snowflakes vs Embers)
+        if not self.particles:
+            num_particles = 30 if is_christmas else 20
+            for _ in range(num_particles):
+                self.particles.append({
+                    'x': random.uniform(0, Window.width),
+                    'y': random.uniform(0, Window.height),
+                    'size': random.uniform(Scale.font(2), Scale.font(6)),
+                    'speed_y': -random.uniform(Scale.vel_h(0.5), Scale.vel_h(1.5)) if is_christmas else random.uniform(Scale.vel_h(0.4), Scale.vel_h(1.2)),
+                    'speed_x': random.uniform(Scale.vel_w(-0.4), Scale.vel_w(0.4)),
+                    'opacity': random.uniform(0.4, 0.9)
+                })
+
+        if not self.particle_event:
+            self.particle_event = Clock.schedule_interval(self.update_seasonal_particles, 1.0 / 60.0)
+
+    def stop_seasonal_effects(self):
+        if self.particle_event:
+            Clock.unschedule(self.particle_event)
+            self.particle_event = None
+
+        if self.glow_anim and 'jbrcade_title_label' in self.ids:
+            self.glow_anim.cancel(self.ids.jbrcade_title_label)
+            self.glow_anim = None
+
+        self.canvas.after.remove_group('seasonal_particles')
+        self.particles = []
+
+    def update_seasonal_particles(self, dt):
+        app = App.get_running_app()
+        if not app:
+            self.stop_seasonal_effects()
+            return
+
+        is_christmas = getattr(app, 'is_christmas_active', lambda: False)()
+
+        self.canvas.after.remove_group('seasonal_particles')
+        
+        with self.canvas.after:
+            for p in self.particles:
+                # Drift physics
+                p['y'] += p['speed_y'] * (dt * 60.0)
+                p['x'] += p['speed_x'] * (dt * 60.0)
+
+                if is_christmas:
+                    # Reset snowflake to top boundary when falling off the bottom
+                    if p['y'] < -p['size']:
+                        p['y'] = Window.height + p['size']
+                        p['x'] = random.uniform(0, Window.width)
+                    # White Snow particles
+                    Color(1.0, 1.0, 1.0, p['opacity'], group='seasonal_particles')
+                else:
+                    # Reset ember to bottom boundary when drifting past the top
+                    if p['y'] > Window.height:
+                        p['y'] = -p['size']
+                        p['x'] = random.uniform(0, Window.width)
+                    # Pumpkin Orange Embers
+                    Color(1.0, 0.5, 0.0, p['opacity'], group='seasonal_particles')
+
+                Ellipse(pos=(p['x'], p['y']), size=(p['size'], p['size']), group='seasonal_particles')
+                
+    def on_touch_down(self, touch):
+        # 1. Direct collision check against header banner widget
+        hit_banner = False
+        if 'header_banner_bg' in self.ids:
+            hit_banner = self.ids.header_banner_bg.collide_point(*touch.pos)
+        
+        # 2. Fallback check: Top 10% of window screen
+        is_top_strip = touch.y >= Window.height * 0.90
+
+        if hit_banner or is_top_strip:
+            self.register_easter_egg_tap()
+            return True  # Consume touch event for easter egg tap chain
+            
+        return super().on_touch_down(touch)
+    
+    def register_easter_egg_tap(self):
+        # If user taps during the 1-second mandatory pause, fail & reset!
+        if self.pause_event:
+            Clock.unschedule(self.pause_event)
+            self.pause_event = None
+            self.tap_count = 0
+            trigger_haptic_feedback(0.08)
+            return
+
+        # Cancel auto-reset timeout on active tap chain
+        if self.reset_event:
+            Clock.unschedule(self.reset_event)
+
+        self.tap_count += 1
+
+        if self.tap_count == 13:
+            # 13th tap achieved! Schedule mandatory 1.0s pause check
+            trigger_haptic_feedback(0.04)
+            self.pause_event = Clock.schedule_once(self.unlock_cheat_screen, 1.0)
+        else:
+            # Reset tap counter if next tap doesn't arrive within 0.6 seconds
+            self.reset_event = Clock.schedule_once(self.reset_tap_count, 0.6)
+
+    def reset_tap_count(self, dt):
+        self.tap_count = 0
+        self.reset_event = None
+
+    def unlock_cheat_screen(self, dt):
+        self.pause_event = None
+        self.tap_count = 0
+        trigger_haptic_feedback(0.2)  # Long haptic buzz for success
+        self.manager.current = 'cheats'
+
+class CheatsScreen(Screen):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.all_unlocked_state = False
+
+        self.layout = RelativeLayout()
+        self.add_widget(self.layout)
+
+        # 1. Dark Background
+        with self.canvas.before:
+            Color(0.04, 0.06, 0.17, 1)
+            self.bg_rect = Rectangle(pos=self.pos, size=self.size)
+        self.bind(pos=self.update_bg, size=self.update_bg)
+
+        # 2. Header
+        self.title_label = Label(
+            text="DEV CHEATS",
+            font_name='assets/fonts/ARCADE_N.TTF',
+            font_size=Scale.font(18),
+            color=(1, 0.84, 0, 1),
+            pos_hint={'center_x': 0.5, 'top': 0.95},
+            size_hint=(1, 0.08)
+        )
+        self.layout.add_widget(self.title_label)
+
+        self.subtitle_label = Label(
+            text="AUTHORIZED PERSONNEL ONLY!",
+            font_name='assets/fonts/ARCADE_N.TTF',
+            font_size=Scale.font(8),
+            color=(0.7, 0.7, 0.8, 0.8),
+            pos_hint={'center_x': 0.5, 'top': 0.88},
+            size_hint=(1, 0.05)
+        )
+        self.layout.add_widget(self.subtitle_label)
+
+        # 3. Back Button
+        self.back_btn = Button(
+            text="< MENU",
+            font_name='assets/fonts/ARCADE_N.TTF',
+            font_size=Scale.font(15),
+            size_hint=(0.25, 0.05),
+            pos_hint={'x': 0.0, 'top': 1.0},
+            background_normal='',
+            background_color=(0.8, 0.25, 0.25, 1)
+        )
+        self.back_btn.bind(on_release=self.go_back)
+        self.layout.add_widget(self.back_btn)
+
+        # 4. Cheats Buttons Stack
+        self.cheat_toggle_btn = Button(
+            text="ALL ACHIEVEMENTS: OFF",
+            font_name='assets/fonts/ARCADE_N.TTF',
+            font_size=Scale.font(12),
+            size_hint=(0.85, 0.08),
+            pos_hint={'center_x': 0.5, 'center_y': 0.65},
+            background_normal='',
+            background_color=(0.8, 0.2, 0.2, 1)
+        )
+        self.cheat_toggle_btn.bind(on_release=self.toggle_all_achievements)
+        self.layout.add_widget(self.cheat_toggle_btn)
+        
+        self.halloween_toggle_btn = Button(
+            text="DEV HALLOWEEN: OFF",
+            font_name='assets/fonts/ARCADE_N.TTF',
+            font_size=Scale.font(12),
+            size_hint=(0.85, 0.08),
+            pos_hint={'center_x': 0.5, 'center_y': 0.52},
+            background_normal='',
+            background_color=(0.8, 0.2, 0.2, 1)
+        )
+        self.halloween_toggle_btn.bind(on_release=self.toggle_dev_halloween)
+        self.layout.add_widget(self.halloween_toggle_btn)
+
+        # --- NEW: DEV CHRISTMAS TOGGLE ---
+        self.christmas_toggle_btn = Button(
+            text="DEV CHRISTMAS: OFF",
+            font_name='assets/fonts/ARCADE_N.TTF',
+            font_size=Scale.font(12),
+            size_hint=(0.85, 0.08),
+            pos_hint={'center_x': 0.5, 'center_y': 0.39},
+            background_normal='',
+            background_color=(0.8, 0.2, 0.2, 1)
+        )
+        self.christmas_toggle_btn.bind(on_release=self.toggle_dev_christmas)
+        self.layout.add_widget(self.christmas_toggle_btn)
+
+    def update_bg(self, *args):
+        self.bg_rect.pos = self.pos
+        self.bg_rect.size = self.size
+        apply_theme_background(self)
+
+    def on_pre_enter(self, *args):
+        self.sync_cheat_state()
+
+    def go_back(self, instance):
+        self.manager.current = 'menu'
+
+    def sync_cheat_state(self):
+        app = App.get_running_app()
+        try:
+            if os.path.exists('save_data.json'):
+                with open('save_data.json', 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    achievements = data.get('achievements', {})
+                    # Check if all registered achievements are True
+                    self.all_unlocked_state = achievements.get('toasty_normal_15', False)
+        except Exception:
+            self.all_unlocked_state = False
+
+        self.update_button_ui()
+        self.update_halloween_button_ui()
+        self.update_christmas_button_ui()
+        
+    def update_christmas_button_ui(self):
+        app = App.get_running_app()
+        if app and getattr(app, 'dev_christmas_override', False):
+            self.christmas_toggle_btn.text = "DEV CHRISTMAS: ON"
+            self.christmas_toggle_btn.background_color = (0.1, 0.6, 0.3, 1)
+        else:
+            self.christmas_toggle_btn.text = "DEV CHRISTMAS: OFF"
+            self.christmas_toggle_btn.background_color = (0.8, 0.2, 0.2, 1)
+        
+    def update_halloween_button_ui(self):
+        app = App.get_running_app()
+        if app and app.dev_halloween_override:
+            self.halloween_toggle_btn.text = "DEV HALLOWEEN: ON"
+            self.halloween_toggle_btn.background_color = (0.1, 0.6, 0.3, 1)
+        else:
+            self.halloween_toggle_btn.text = "DEV HALLOWEEN: OFF"
+            self.halloween_toggle_btn.background_color = (0.8, 0.2, 0.2, 1)
+            
+    def toggle_dev_christmas(self, instance):
+        app = App.get_running_app()
+        if app:
+            # Toggle Christmas & clear Halloween override
+            app.dev_christmas_override = not getattr(app, 'dev_christmas_override', False)
+            if app.dev_christmas_override:
+                app.dev_halloween_override = False
+            
+            app.save_seasonal_settings()
+            
+            # Revert track to CLASSIC if Christmas turned off while playing CHRISTMAS
+            if not app.is_christmas_active() and app.current_music_name == 'CHRISTMAS':
+                app.switch_music_track('CLASSIC')
+                
+            self.update_halloween_button_ui()
+            self.update_christmas_button_ui()
+            trigger_haptic_feedback(0.08)
+            
+    def toggle_dev_halloween(self, instance):
+        app = App.get_running_app()
+        if app:
+            app.dev_halloween_override = not app.dev_halloween_override
+            if app.dev_halloween_override:
+                app.dev_christmas_override = False
+
+            app.save_seasonal_settings()
+            
+            # Revert track to CLASSIC if Halloween turned off while playing HALLOWEEN
+            if not app.is_halloween_active() and app.current_music_name == 'HALLOWEEN':
+                app.switch_music_track('CLASSIC')
+                
+            self.update_halloween_button_ui()
+            self.update_christmas_button_ui()
+            trigger_haptic_feedback(0.08)
+
+    def update_button_ui(self):
+        if self.all_unlocked_state:
+            self.cheat_toggle_btn.text = "ALL ACHIEVEMENTS: ON"
+            self.cheat_toggle_btn.background_color = (0.1, 0.6, 0.3, 1)  # Green
+        else:
+            self.cheat_toggle_btn.text = "ALL ACHIEVEMENTS: OFF"
+            self.cheat_toggle_btn.background_color = (0.8, 0.2, 0.2, 1)  # Red
+
+    def toggle_all_achievements(self, instance):
+        self.all_unlocked_state = not self.all_unlocked_state
+
+        try:
+            data = {}
+            if os.path.exists('save_data.json'):
+                with open('save_data.json', 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+
+            # Set achievement keys according to toggle state
+            achievements = {
+                'toasty_normal_15': self.all_unlocked_state,
+                'toasty_normal_50': self.all_unlocked_state,
+                'toasty_normal_100': self.all_unlocked_state,
+                'gatekeeper_flawless_3': self.all_unlocked_state,
+                'gatekeeper_flawless_6': self.all_unlocked_state,
+                'gatekeeper_flawless_9': self.all_unlocked_state
+            }
+            data['achievements'] = achievements
+
+            with open('save_data.json', 'w', encoding='utf-8') as f:
+                json.dump(data, f)
+
+            trigger_haptic_feedback(0.08)
+        except Exception:
+            pass
+
+        self.update_button_ui()
 
 class ToastyMallowScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         
         self.game_running = False
-        self.gravity = -0.8          
+        # Physics scaled to screen dimensions via Scale utility
+        self.gravity = Scale.vel_h(-0.8)          
         self.velocity = 0 
-        self.jump_strength = 22      
+        self.jump_strength = Scale.vel_h(14.0)      
         self.score = 0 
         self.obstacles = [] 
         
@@ -364,10 +1330,10 @@ class ToastyMallowScreen(Screen):
         
         self.update_event = None 
         self.spawn_event = None 
-        self.start_countdown_event = None  # Tracked timer reference to prevent freeze on early exit
+        self.start_countdown_event = None  # Tracked timer reference
         
         self.stars = [] 
-        self.star_scroll_speed = Window.width * 0.002 
+        self.star_scroll_speed = Scale.vel_w(1.0) 
         self.generate_initial_stars() 
         
         self.trail_particles = []
@@ -381,36 +1347,39 @@ class ToastyMallowScreen(Screen):
             self.bg_rect = Rectangle(pos=self.pos, size=self.size) 
         self.bind(pos=self.update_bg, size=self.update_bg) 
 
-        # UI Headers & Score Displays
+        # UI Headers & Score Displays (Scaled Fonts)
         self.title_label = Label(
-            text="TOASTY MALLOW", font_size='20sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="TOASTY MALLOW", font_size=Scale.font(30), font_name='assets/fonts/ARCADE_N.TTF',
             color=(0, 0.75, 1, 1), pos_hint={'center_x': 0.5, 'center_y': 0.75}
         )
         self.layout.add_widget(self.title_label)
         
         self.score_label = Label(
-            text="SCORE: 0", font_size='16sp', font_name='assets/fonts/ARCADE_N.TTF',
-            color=(1, 1, 1, 1), pos_hint={'center_x': 0.5, 'center_y': 0.88},
+            text="SCORE: 0  |  BEST: 0", 
+            font_size=Scale.font(15), 
+            font_name='assets/fonts/ARCADE_N.TTF',
+            color=(1, 1, 1, 1), 
+            pos_hint={'center_x': 0.5, 'center_y': 0.88},
             opacity=0
         )
         self.layout.add_widget(self.score_label)
         
         self.high_score_alert = Label(
-            text="NEW HIGH SCORE!", font_size='16sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="NEW HIGH SCORE!", font_size=Scale.font(16), font_name='assets/fonts/ARCADE_N.TTF',
             color=(1, 0.84, 0, 1), pos_hint={'center_x': 0.5, 'center_y': 0.70},
             opacity=0
         )
         self.layout.add_widget(self.high_score_alert)
 
         self.back_btn = Button(
-            text="< MENU", font_size='10sp', font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
+            text="< MENU", font_size=Scale.font(15), font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
             size_hint=(0.25, 0.05), pos_hint={'x': 0.0, 'top': 1.0},
             background_normal='', background_color=(0.8, 0.25, 0.25, 1)
         )
         self.back_btn.bind(on_release=self.go_back_to_menu)
         self.layout.add_widget(self.back_btn)
 
-        # 🟢 STANDARDIZED ROW WRAPPER AT y=0.2 (Matches standard layout structure)
+        # Standardized Action Controls Row Wrapper
         self.play_help_row = BoxLayout(
             orientation='horizontal', spacing=dp(10),
             size_hint=(0.9, 0.1), pos_hint={'center_x': 0.5, 'center_y': 0.2}
@@ -418,7 +1387,7 @@ class ToastyMallowScreen(Screen):
         self.layout.add_widget(self.play_help_row)
 
         self.start_btn = Button(
-            text="PLAY", font_size='18sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="START GAME", font_size=Scale.font(30), font_name='assets/fonts/ARCADE_N.TTF',
             background_normal='', background_color=(0, 0.75, 1, 1), color=(0.04, 0.06, 0.17, 1),
             size_hint_x=0.8
         )
@@ -426,7 +1395,7 @@ class ToastyMallowScreen(Screen):
         self.play_help_row.add_widget(self.start_btn)
 
         self.help_btn = Button(
-            text="?", font_size='16sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="?", font_size=Scale.font(16), font_name='assets/fonts/ARCADE_N.TTF',
             background_normal='', background_color=(0, 0.5, 0.8, 1), color=(1, 1, 1, 1),
             size_hint_x=0.2
         )
@@ -442,31 +1411,65 @@ class ToastyMallowScreen(Screen):
         self.layout.add_widget(self.diff_row)
 
         self.prev_diff_btn = Button(
-            text="<", font_name='assets/fonts/ARCADE_N.TTF', font_size='16sp', size_hint_x=0.2,
+            text="<", font_name='assets/fonts/ARCADE_N.TTF', font_size=Scale.font(16), size_hint_x=0.2,
             background_normal='', background_color=(0, 0.75, 1, 0.3), color=(0, 0.75, 1, 1)
         )
         self.prev_diff_btn.bind(on_release=lambda x: self.cycle_difficulty(-1))
         self.diff_row.add_widget(self.prev_diff_btn)
 
         self.diff_label = Label(
-            text="NORMAL", font_name='assets/fonts/ARCADE_N.TTF', font_size='11sp',
+            text="NORMAL", font_name='assets/fonts/ARCADE_N.TTF', font_size=Scale.font(16),
             color=(1, 1, 1, 1), halign='center'
         )
         self.diff_row.add_widget(self.diff_label)
 
         self.next_diff_btn = Button(
-            text=">", font_name='assets/fonts/ARCADE_N.TTF', font_size='16sp', size_hint_x=0.2,
+            text=">", font_name='assets/fonts/ARCADE_N.TTF', font_size=Scale.font(16), size_hint_x=0.2,
             background_normal='', background_color=(0, 0.75, 1, 0.3), color=(0, 0.75, 1, 1)
         )
         self.next_diff_btn.bind(on_release=lambda x: self.cycle_difficulty(1))
         self.diff_row.add_widget(self.next_diff_btn)
 
-        self.mallow_x = Window.width * 0.2 
-        self.mallow_y = Window.height * 0.5 
-        self.mallow_w = Window.width * 0.15 
-        self.mallow_h = Window.width * 0.15 
+        # Mallow Dimensions (Sized using minimum screen dimension to prevent stretching on wide tablets)
+        self.mallow_x = Scale.width_pct(0.2) 
+        self.mallow_y = Scale.height_pct(0.5) 
+        self.mallow_w = Scale.min_dim(0.15) 
+        self.mallow_h = Scale.min_dim(0.15) 
         
         self.load_high_score()
+        
+    # Inside ToastyMallowScreen
+
+    def check_achievements(self):
+        mode = self.difficulties[self.current_diff_idx]
+        # Check if we hit 10 points on Normal mode
+        if mode == 'NORMAL':
+            if self.score >= 10:
+                self.unlock_achievement('toasty_normal_15')
+            if self.score >= 50:
+                self.unlock_achievement('toasty_normal_50')
+            if self.score >= 100:
+                self.unlock_achievement('toasty_normal_100')
+
+    def unlock_achievement(self, achievement_id):
+        try:
+            data = {}
+            if os.path.exists('save_data.json'):
+                with open('save_data.json', 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+            
+            achievements = data.get('achievements', {})
+            if not achievements.get(achievement_id, False):
+                achievements[achievement_id] = True
+                data['achievements'] = achievements
+                
+                with open('save_data.json', 'w', encoding='utf-8') as f:
+                    json.dump(data, f)
+                
+                # Trigger haptic feedback for unlock
+                trigger_haptic_feedback(0.2)
+        except Exception:
+            pass
 
     def show_instructions_overlay(self, instance):
         self.play_help_row.disabled = True
@@ -504,17 +1507,17 @@ class ToastyMallowScreen(Screen):
             self.stars.append({ 
                 'x': random.uniform(0, Window.width), 
                 'y': random.uniform(0, Window.height), 
-                'size': random.uniform(dp(2), dp(5)), 
+                'size': random.uniform(Scale.font(2), Scale.font(5)), 
                 'opacity': random.uniform(0.3, 0.6) 
             }) 
 
     def update_bg(self, *args):
         self.bg_rect.pos = self.pos 
         self.bg_rect.size = self.size 
-        self.mallow_w = Window.width * 0.15 
+        self.mallow_w = Scale.min_dim(0.15) 
         self.mallow_h = self.mallow_w 
         if not self.game_running: 
-            self.mallow_y = Window.height * 0.5 
+            self.mallow_y = Scale.height_pct(0.5) 
         self.draw_game_canvas() 
 
     def go_back_to_menu(self, instance=None):
@@ -537,6 +1540,7 @@ class ToastyMallowScreen(Screen):
         mode = self.difficulties[self.current_diff_idx]
         self.diff_label.text = mode
         self.load_high_score()
+        self.score_label.text = f"SCORE: {self.score}  |  BEST: {self.high_score}"
         
         if mode == 'DREAMY': self.diff_label.color = (0, 1, 0.8, 1)
         elif mode == 'EASY': self.diff_label.color = (0.2, 0.8, 0.2, 1)
@@ -545,32 +1549,19 @@ class ToastyMallowScreen(Screen):
         elif mode == 'NIGHTMARE': self.diff_label.color = (0.9, 0.1, 0.1, 1)
 
     def load_high_score(self):
-        mode = self.difficulties[self.current_diff_idx]
-        try:
-            if os.path.exists('save_data.json'):
-                with open('save_data.json', 'r') as f:
-                    data = json.load(f)
-                    self.high_score = data.get(f'toasty_mallow_{mode.lower()}_high', 0)
-        except Exception:
-            self.high_score = 0
+        mode = self.difficulties[self.current_diff_idx].lower()
+        # Use web_load_game_data helper so JSON/Web save keys match across screens
+        self.high_score = web_load_game_data(f'toasty_mallow_{mode}_high', 0)
 
     def save_high_score(self):
-        mode = self.difficulties[self.current_diff_idx]
-        try:
-            data = {}
-            if os.path.exists('save_data.json'):
-                with open('save_data.json', 'r') as f:
-                    data = json.load(f)
-            data[f'toasty_mallow_{mode.lower()}_high'] = self.high_score
-            with open('save_data.json', 'w') as f:
-                json.dump(data, f)
-        except Exception:
-            pass
+        mode = self.difficulties[self.current_diff_idx].lower()
+        # Use web_save_game_data helper
+        web_save_game_data(f'toasty_mallow_{mode}_high', self.high_score)
 
     def start_game_countdown(self, instance=None):
         self.cleanup_engine() 
         self.score = 0 
-        self.mallow_y = Window.height * 0.5 
+        self.mallow_y = Scale.height_pct(0.5) 
         self.velocity = 0 
         self.obstacles = [] 
         
@@ -591,12 +1582,11 @@ class ToastyMallowScreen(Screen):
         self.velocity = 0 
         self.obstacles = [] 
         self.score_label.opacity = 1 
-        self.score_label.text = "SCORE: 0" 
+        self.score_label.text = f"SCORE: 0  |  BEST: {self.high_score}"
         
-        # 🟢 FIX FOR DOUBLE PILLAR BUG: Spawn 1st obstacle immediately, then schedule regular 1.5s ticks
         self.spawn_log_obstacle(0) 
         self.update_event = Clock.schedule_interval(self.update_physics, 1.0 / 60.0) 
-        self.spawn_event = Clock.schedule_interval(self.spawn_log_obstacle, 1.5) 
+        self.spawn_event = Clock.schedule_interval(self.spawn_log_obstacle, 1.5)
 
     def spawn_log_obstacle(self, dt):
         if not self.game_running: return 
@@ -605,34 +1595,32 @@ class ToastyMallowScreen(Screen):
         anim_type = 'STATIC'
         
         if mode == 'DREAMY':
-            gap = Window.height * 0.45   
+            gap = Scale.height_pct(0.45)   
         elif mode == 'EASY':
-            gap = Window.height * 0.37
+            gap = Scale.height_pct(0.37)
         elif mode == 'NORMAL':
-            gap = Window.height * 0.28
+            gap = Scale.height_pct(0.28)
         elif mode == 'HARD':
-            # 🟢 HARD MODE: Dynamic Moving / Pulsing / Shifting Pillars
             anim_type = random.choice(['STATIC', 'SHIFT', 'PULSE'])
-            gap = Window.height * 0.45 if anim_type == 'PULSE' else Window.height * 0.32
+            gap = Scale.height_pct(0.45) if anim_type == 'PULSE' else Scale.height_pct(0.32)
         elif mode == 'NIGHTMARE':
-            # 🟢 NIGHTMARE MODE: Invisible Camouflaged Pillars
-            gap = Window.height * 0.23
+            gap = Scale.height_pct(0.23)
             
-        min_height = Window.height * 0.15 
-        max_height = Window.height * 0.65
+        min_height = Scale.height_pct(0.15) 
+        max_height = Scale.height_pct(0.65)
         bottom_log_height = random.uniform(min_height, max_height) 
         top_log_pos_y = bottom_log_height + gap 
         top_log_height = Window.height - top_log_pos_y 
         
         anim_dir = -1 if anim_type == 'PULSE' else random.choice([-1, 1])
-        anim_speed = Window.height * random.uniform(0.12, 0.22)
+        anim_speed = Scale.vel_h(random.uniform(1.0, 2.0))
 
         self.obstacles.append({
             'x': Window.width, 
             'bottom_h': bottom_log_height, 
             'top_y': top_log_pos_y, 
             'top_h': top_log_height, 
-            'width': Window.width * 0.18, 
+            'width': Scale.min_dim(0.18), 
             'scored': False,
             
             'anim_type': anim_type,
@@ -653,7 +1641,7 @@ class ToastyMallowScreen(Screen):
 
     def update_physics(self, dt):
         mode = self.difficulties[self.current_diff_idx]
-        log_scroll_speed = (Window.width * 0.01) * (dt * 60.0)
+        log_scroll_speed = Scale.vel_w(5.0) * (dt * 60.0)
 
         for star in self.stars: 
             star['x'] -= self.star_scroll_speed * (dt * 60.0) 
@@ -672,7 +1660,7 @@ class ToastyMallowScreen(Screen):
                 self.trail_particles.append({
                     'x': self.mallow_x, 
                     'y': self.mallow_y + self.mallow_h / 4, 
-                    'size': random.uniform(dp(6), dp(10))
+                    'size': random.uniform(Scale.font(6), Scale.font(10))
                 })
         
         for p in self.trail_particles:
@@ -692,23 +1680,23 @@ class ToastyMallowScreen(Screen):
             
             if mode == 'HARD':
                 if log['anim_type'] == 'SHIFT':
-                    shift_delta = log['anim_dir'] * log['anim_speed'] * dt
+                    shift_delta = log['anim_dir'] * log['anim_speed'] * (dt * 60.0)
                     log['bottom_h'] += shift_delta
                     log['top_y'] += shift_delta
                     
-                    if log['bottom_h'] < Window.height * 0.1: log['anim_dir'] = 1
-                    elif log['top_y'] > Window.height * 0.9: log['anim_dir'] = -1
+                    if log['bottom_h'] < Scale.height_pct(0.1): log['anim_dir'] = 1
+                    elif log['top_y'] > Scale.height_pct(0.9): log['anim_dir'] = -1
                     
                     log['top_h'] = Window.height - log['top_y']
                     
                 elif log['anim_type'] == 'PULSE':
-                    log['current_gap'] += log['anim_dir'] * log['anim_speed'] * dt
+                    log['current_gap'] += log['anim_dir'] * log['anim_speed'] * (dt * 60.0)
                     
-                    if log['current_gap'] <= Window.height * 0.23: 
-                        log['current_gap'] = Window.height * 0.23
+                    if log['current_gap'] <= Scale.height_pct(0.23): 
+                        log['current_gap'] = Scale.height_pct(0.23)
                         log['anim_dir'] = 1  
-                    elif log['current_gap'] >= Window.height * 0.45: 
-                        log['current_gap'] = Window.height * 0.45
+                    elif log['current_gap'] >= Scale.height_pct(0.45): 
+                        log['current_gap'] = Scale.height_pct(0.45)
                         log['anim_dir'] = -1 
                     
                     log['bottom_h'] = log['center_y'] - (log['current_gap'] / 2)
@@ -722,7 +1710,9 @@ class ToastyMallowScreen(Screen):
                 
             if not log['scored'] and (log['x'] + log['width']) < self.mallow_x: 
                 self.score += 1 
-                self.score_label.text = f"SCORE: {self.score}" 
+                if self.score > self.high_score:
+                    self.high_score = self.score
+                self.score_label.text = f"SCORE: {self.score}  |  BEST: {self.high_score}"
                 log['scored'] = True 
                 
             if log['x'] < -log['width']: 
@@ -754,7 +1744,6 @@ class ToastyMallowScreen(Screen):
         mode = self.difficulties[self.current_diff_idx]
         
         with self.canvas.before:
-            # 🟢 NIGHTMARE MODE: Scale stars 5x larger to create clear silhouette cuts
             star_scale = 5.0 if mode == 'NIGHTMARE' else 1.0
             for star in self.stars: 
                 Color(1, 1, 1, star['opacity'], group='toasty_vector_shapes') 
@@ -762,10 +1751,8 @@ class ToastyMallowScreen(Screen):
                 Ellipse(pos=(star['x'], star['y']), size=(sz, sz), group='toasty_vector_shapes') 
                 
             if mode == 'NIGHTMARE':
-                # Invisible pillars (matches cosmic background #0A0F2C)
                 Color(0.04, 0.06, 0.17, 1, group='toasty_vector_shapes') 
             elif mode == 'HARD':
-                # Crimson color scheme for moving pillars
                 Color(0.7, 0.1, 0.1, 1, group='toasty_vector_shapes') 
             elif mode == 'DREAMY':
                 Color(0.0, 0.6, 0.5, 0.8, group='toasty_vector_shapes') 
@@ -786,8 +1773,14 @@ class ToastyMallowScreen(Screen):
                 Rectangle(pos=(self.mallow_x, self.mallow_y), size=(self.mallow_w, self.mallow_h), group='toasty_vector_shapes') 
 
     def game_over(self):
+        record_jbrcade_game_score("toasty_mallow", self.score)
         self.game_running = False 
-        self.cleanup_engine() 
+        self.cleanup_engine()
+        
+        # Ensure fresh high score is loaded before comparing
+        self.load_high_score()
+        
+        self.check_achievements() 
         
         is_new_high = self.score > self.high_score
         if is_new_high:
@@ -799,7 +1792,9 @@ class ToastyMallowScreen(Screen):
 
         self.title_label.text = "TOASTED!" 
         self.title_label.opacity = 1 
-        self.score_label.text = f"{self.score} POINTS" 
+        
+        # Correctly format score & persistent high score label
+        self.score_label.text = f"SCORE: {self.score}  |  BEST: {self.high_score}"
         self.score_label.opacity = 1
         
         self.play_help_row.opacity = 1
@@ -807,7 +1802,15 @@ class ToastyMallowScreen(Screen):
         self.diff_row.opacity = 1
         self.diff_row.disabled = False
         self.start_btn.text = "PLAY AGAIN"
-        self.update_difficulty_ui()
+        
+        # Sync color labels without overwriting self.score_label
+        mode = self.difficulties[self.current_diff_idx]
+        self.diff_label.text = mode
+        if mode == 'DREAMY': self.diff_label.color = (0, 1, 0.8, 1)
+        elif mode == 'EASY': self.diff_label.color = (0.2, 0.8, 0.2, 1)
+        elif mode == 'NORMAL': self.diff_label.color = (1, 1, 1, 1)
+        elif mode == 'HARD': self.diff_label.color = (1, 0.5, 0, 1)
+        elif mode == 'NIGHTMARE': self.diff_label.color = (0.9, 0.1, 0.1, 1)
 
     def cleanup_engine(self):
         self.velocity = 0 
@@ -835,8 +1838,12 @@ class FocusFlashScreen(Screen):
         self.target_order = []
         self.current_click_index = 0
         self.active_tiles = []
+        self.decoy_tiles = []
         
-        # 1. Set the Deep Game Background Color (#0A0F2C)
+        self.difficulties = ['EASY', 'NORMAL', 'HARD']
+        self.current_diff_idx = 1  # Default to NORMAL
+        
+        # 1. Background Layer (#0A0F2C)
         with self.canvas.before:
             Color(0.04, 0.06, 0.17, 1)
             self.bg_rect = Rectangle(pos=self.pos, size=self.size)
@@ -846,77 +1853,120 @@ class FocusFlashScreen(Screen):
         self.layout = RelativeLayout()
         self.add_widget(self.layout)
         
-        # Main Status / Countdown Label
+        # Status Label
         self.status_label = Label(
             text="TAP START",
-            font_size='18sp',
+            font_size=Scale.font(30),
             font_name='assets/fonts/ARCADE_N.TTF',
             color=(0, 0.75, 1, 1),
             pos_hint={'center_x': 0.5, 'center_y': 0.90}
         )
         self.layout.add_widget(self.status_label)
         
-        # Permanent Top HUD Tracker
+        # HUD Tracker
         self.load_high_score()
         self.score_label = Label(
             text=f"ROUND: {self.round_number}  |  BEST: {self.high_score}",
-            font_size='11sp',
+            font_size=Scale.font(15),
             font_name='assets/fonts/ARCADE_N.TTF',
             color=(0, 0.75, 1, 1),
-            pos_hint={'center_x': 0.5, 'center_y': 0.8}
+            pos_hint={'center_x': 0.5, 'center_y': 0.82}
         )
         self.layout.add_widget(self.score_label)
         
-        # Back Button to Menu
+        # Back Button
         self.back_btn = Button(
             text="< MENU",
-            font_size='10sp',
+            font_size=Scale.font(15),
             font_name='assets/fonts/ARCADE_N.TTF',
             color=(1, 1, 1, 1),
             size_hint=(0.25, 0.05),
-            pos_hint={'x': 0.0, 'top': 1},
+            pos_hint={'x': 0.0, 'top': 1.0},
             background_normal='',
             background_color=(0.8, 0.25, 0.25, 1)
         )
         self.back_btn.bind(on_release=self.go_back_to_menu)
         self.layout.add_widget(self.back_btn)
         
-        # 🟢 FIXED: Create a dedicated container row and mount it directly to self.layout
+        # Action Row (PLAY & HELP)
         self.play_help_row = BoxLayout(
             orientation='horizontal', 
             spacing=dp(10),
-            size_hint=(0.9,0.1),
+            size_hint=(0.9, 0.1),
             pos_hint={'center_x': 0.5, 'center_y': 0.2}
         )
         self.layout.add_widget(self.play_help_row)
 
         self.start_btn = Button(
-            text="start game", font_size='18sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="START GAME", font_size=Scale.font(25), font_name='assets/fonts/ARCADE_N.TTF',
             background_normal='', background_color=(0, 0.75, 1, 1), color=(0.04, 0.06, 0.17, 1),
             size_hint_x=0.8
         )
         self.start_btn.bind(on_release=self.start_countdown_sequence)
         self.play_help_row.add_widget(self.start_btn)
 
-        # Compact Help Callout Button Slot
         self.help_btn = Button(
-            text="?", font_size='16sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="?", font_size=Scale.font(16), font_name='assets/fonts/ARCADE_N.TTF',
             background_normal='', background_color=(0, 0.5, 0.8, 1), color=(1, 1, 1, 1),
             size_hint_x=0.2
         )
         self.help_btn.bind(on_release=self.show_instructions_overlay)
         self.play_help_row.add_widget(self.help_btn)
 
+        # Difficulty Scroll Wheel Row (Positioned at y=0.1)
+        self.diff_row = BoxLayout(
+            orientation='horizontal', spacing=dp(10), 
+            size_hint=(0.9, None), height=dp(45),
+            pos_hint={'center_x': 0.5, 'center_y': 0.1}
+        )
+        self.layout.add_widget(self.diff_row)
+
+        self.prev_diff_btn = Button(
+            text="<", font_name='assets/fonts/ARCADE_N.TTF', font_size=Scale.font(16), size_hint_x=0.2,
+            background_normal='', background_color=(0, 0.75, 1, 0.3), color=(0, 0.75, 1, 1)
+        )
+        self.prev_diff_btn.bind(on_release=lambda x: self.cycle_difficulty(-1))
+        self.diff_row.add_widget(self.prev_diff_btn)
+
+        self.diff_label = Label(
+            text="NORMAL", font_name='assets/fonts/ARCADE_N.TTF', font_size=Scale.font(16),
+            color=(1, 1, 1, 1), halign='center'
+        )
+        self.diff_row.add_widget(self.diff_label)
+
+        self.next_diff_btn = Button(
+            text=">", font_name='assets/fonts/ARCADE_N.TTF', font_size=Scale.font(16), size_hint_x=0.2,
+            background_normal='', background_color=(0, 0.75, 1, 0.3), color=(0, 0.75, 1, 1)
+        )
+        self.next_diff_btn.bind(on_release=lambda x: self.cycle_difficulty(1))
+        self.diff_row.add_widget(self.next_diff_btn)
+
+    def cycle_difficulty(self, direction):
+        if hasattr(self, 'game_running') and self.game_running: return
+        self.current_diff_idx = (self.current_diff_idx + direction) % len(self.difficulties)
+        self.update_difficulty_ui()
+
+    def update_difficulty_ui(self):
+        mode = self.difficulties[self.current_diff_idx]
+        self.diff_label.text = mode
+        self.load_high_score()
+        
+        if mode == 'EASY': self.diff_label.color = (0.2, 0.8, 0.2, 1)
+        elif mode == 'NORMAL': self.diff_label.color = (1, 1, 1, 1)
+        elif mode == 'HARD': self.diff_label.color = (0.9, 0.1, 0.1, 1)
+        
+        self.score_label.text = f"ROUND: {self.round_number}  |  BEST: {self.high_score}"
+
     def show_instructions_overlay(self, instance):
-        # Disable inputs on our row and back buttons while overlay is open
         self.play_help_row.disabled = True
+        self.diff_row.disabled = True
         self.back_btn.disabled = True
         
         game_name = "Focus Flash"
         placeholders = [
-            "numbered cards will flash on your screen",
-            "Rely on your peripheral vision to capture their values",
-            "tap the blank cards in their numerical order"
+            "Numbered cards will flash briefly on your screen",
+            "Rely on your peripheral vision to capture their positions and values",
+            "Tap the blank cards in ascending numerical order"
         ]
         
         overlay = InstructionOverlay(
@@ -928,35 +1978,32 @@ class FocusFlashScreen(Screen):
 
     def on_instructions_closed(self):
         self.play_help_row.disabled = False
+        self.diff_row.disabled = False
         self.back_btn.disabled = False
     
     def on_pre_enter(self, *args):
+        self.update_difficulty_ui()
         self.reset_screen_to_baseline()
 
     def on_leave(self, *args):
         Clock.unschedule(self.handle_countdown_tick)
         self.clear_previous_tiles()
-        # Clean away overlay if backing out early
-        for child in list(self.layout.children):
-            if isinstance(child, InstructionOverlay):
-                self.layout.remove_widget(child)
 
     def reset_screen_to_baseline(self):
         self.clear_previous_tiles()
         self.round_number = 1
         
-        self.status_label.font_size = '18sp'
+        self.status_label.font_size = Scale.font(30)
         self.status_label.text = "TAP START"
         self.score_label.text = f"ROUND: {self.round_number}  |  BEST: {self.high_score}"
         
-        # 🟢 FIXED: Safely verify parent configurations against the row wrapper
-        if self.play_help_row.parent:
-            self.layout.remove_widget(self.play_help_row)
-            
-        self.start_btn.text = "start game"
-        self.start_btn.background_color = (0, 0.75, 1, 1)
+        self.play_help_row.opacity = 1
         self.play_help_row.disabled = False
-        self.layout.add_widget(self.play_help_row)
+        self.diff_row.opacity = 1
+        self.diff_row.disabled = False
+        
+        self.start_btn.text = "START GAME"
+        self.start_btn.background_color = (0, 0.75, 1, 1)
 
     def update_bg(self, *args):
         self.bg_rect.pos = self.pos
@@ -966,36 +2013,48 @@ class FocusFlashScreen(Screen):
         self.manager.current = 'menu'
 
     def load_high_score(self):
+        mode = self.difficulties[self.current_diff_idx].lower()
         try:
             if os.path.exists('save_data.json'):
                 with open('save_data.json', 'r') as f:
                     data = json.load(f)
-                    self.high_score = data.get('focus_flash_high_round', 1)
+                    self.high_score = data.get(f'focus_flash_{mode}_high', 1)
         except Exception:
             self.high_score = 1
 
     def save_high_score(self):
+        mode = self.difficulties[self.current_diff_idx].lower()
         try:
             data = {}
             if os.path.exists('save_data.json'):
                 with open('save_data.json', 'r') as f:
                     data = json.load(f)
-            data['focus_flash_high_round'] = self.high_score
+            data[f'focus_flash_{mode}_high'] = self.high_score
             with open('save_data.json', 'w') as f:
                 json.dump(data, f)
         except Exception:
             pass
 
     def start_countdown_sequence(self, instance):
-        # 🟢 FIXED: Remove the entire row container when the game round kicks off
-        Clock.schedule_once(lambda dt: self.layout.remove_widget(self.play_help_row) if self.play_help_row.parent else None, 0)
+        self.play_help_row.opacity = 0
+        self.play_help_row.disabled = True
+        self.diff_row.opacity = 0
+        self.diff_row.disabled = True
+        
         self.clear_previous_tiles()
         
-        self.status_label.font_size = '32sp'
-        self.tiles_count = 3 + ((self.round_number - 1) // 5)
+        mode = self.difficulties[self.current_diff_idx]
+        if mode == 'EASY':
+            self.tiles_count = 2 + ((self.round_number - 1) // 5)
+        elif mode == 'NORMAL':
+            self.tiles_count = 3 + ((self.round_number - 1) // 5)
+        else: # HARD
+            self.tiles_count = 4 + ((self.round_number - 1) // 5)
+            
+        self.status_label.font_size = Scale.font(30)
         self.score_label.text = f"ROUND: {self.round_number}  |  BEST: {self.high_score}"
         
-        self.generate_ascending_sequence()
+        self.generate_sequence_by_difficulty()
         
         self.countdown_ticks = 3
         self.status_label.text = str(self.countdown_ticks)
@@ -1007,53 +2066,57 @@ class FocusFlashScreen(Screen):
         if self.countdown_ticks > 0:
             self.status_label.text = str(self.countdown_ticks)
         else:
-            self.status_label.font_size = '28sp'
+            self.status_label.font_size = Scale.font(30)
             self.status_label.text = "FOCUS!"
             Clock.unschedule(self.handle_countdown_tick)
             self.spawn_flash_tiles()
 
-    def generate_ascending_sequence(self):
-        pattern_type = random.choice(['consecutive', 'intervals', 'unrelated'])
+    def generate_sequence_by_difficulty(self):
+        mode = self.difficulties[self.current_diff_idx]
         start_num = random.randint(1, 20)
-        
-        if pattern_type == 'consecutive':
+
+        if mode == 'EASY':
+            # Sequential runs (1-2-3, 5-6-7, etc.)
             self.generated_numbers = [start_num + i for i in range(self.tiles_count)]
-        elif pattern_type == 'intervals':
-            step = random.randint(2, 4)
+        elif mode == 'NORMAL':
+            # Multiples & fixed steps (+2, +5, +10, etc.)
+            step = random.choice([2, 3, 5, 10])
             self.generated_numbers = [start_num + (i * step) for i in range(self.tiles_count)]
-        else:
-            self.generated_numbers = sorted(random.sample(range(1, 99), self.tiles_count))
+        else: # HARD
+            # Large steps & non-linear random jumps
+            self.generated_numbers = sorted(random.sample(range(10, 99), self.tiles_count))
         
         self.target_order = list(self.generated_numbers)
         self.current_click_index = 0
 
     def spawn_flash_tiles(self):
-        min_x, max_x = Window.width * 0.28, Window.width * 0.58
-        min_y, max_y = Window.height * 0.32, Window.height * 0.52
-        tile_size = Window.width * 0.15
+        mode = self.difficulties[self.current_diff_idx]
+        tile_size = Scale.min_dim(0.15)
         
-        for num in self.generated_numbers:
-            pos_x = random.uniform(min_x, max_x)
-            pos_y = random.uniform(min_y, max_y)
-            
-            attempts = 0
-            while attempts < 100:
-                test_x = random.uniform(min_x, max_x)
-                test_y = random.uniform(min_y, max_y)
-                overlap = False
-                for tile in self.active_tiles:
-                    if abs(tile.x - test_x) < tile_size and abs(tile.y - test_y) < tile_size:
-                        overlap = True
-                        break
-                if not overlap:
-                    pos_x = test_x
-                    pos_y = test_y
-                    break
-                attempts += 1
-            
+        # Grid bounds per difficulty tier
+        if mode == 'EASY':
+            min_x, max_x = Window.width * 0.30, Window.width * 0.55
+            min_y, max_y = Window.height * 0.35, Window.height * 0.50
+        else:
+            min_x, max_x = Window.width * 0.12, Window.width * 0.72
+            min_y, max_y = Window.height * 0.28, Window.height * 0.65
+
+        # --- 5% Soft-Overlap Collision Logic ---
+        min_allowed_distance = tile_size * 0.95
+
+        placed_positions = []
+        all_targets = list(self.generated_numbers)
+        
+        # Add 1 decoy blank card for Hard mode
+        num_decoys = 1 if mode == 'HARD' else 0
+
+        for num in all_targets:
+            pos_x, pos_y = self.find_valid_spawn_pos(min_x, max_x, min_y, max_y, min_allowed_distance, placed_positions)
+            placed_positions.append((pos_x, pos_y))
+
             btn = Button(
                 text=str(num),
-                font_size='22sp',  
+                font_size=Scale.font(20),  
                 font_name='assets/fonts/ARCADE_N.TTF',
                 color=(0, 0.75, 1, 1), 
                 size_hint=(None, None),
@@ -1067,12 +2130,57 @@ class FocusFlashScreen(Screen):
             
             self.layout.add_widget(btn)
             self.active_tiles.append(btn)
+
+        # Spawn Decoy Cards
+        for _ in range(num_decoys):
+            pos_x, pos_y = self.find_valid_spawn_pos(min_x, max_x, min_y, max_y, min_allowed_distance, placed_positions)
+            placed_positions.append((pos_x, pos_y))
+
+            decoy = Button(
+                text="",
+                size_hint=(None, None),
+                size=(tile_size, tile_size),
+                pos=(pos_x, pos_y),
+                background_normal='',
+                background_color=(0.12, 0.16, 0.32, 0.6)
+            )
+            self.layout.add_widget(decoy)
+            self.decoy_tiles.append(decoy)
+
+        # Dynamic Flash Duration Scaling
+        if mode == 'EASY':
+            flash_time = max(1.5, 2.0 - (self.round_number - 1) * 0.05)
+        elif mode == 'NORMAL':
+            flash_time = max(0.8, 1.2 - (self.round_number - 1) * 0.04)
+        else: # HARD
+            flash_time = max(0.5, 0.8 - (self.round_number - 1) * 0.03)
+
+        Clock.schedule_once(self.hide_tile_values, flash_time)
+
+    def find_valid_spawn_pos(self, min_x, max_x, min_y, max_y, min_dist, placed_positions):
+        for _ in range(150):
+            test_x = random.uniform(min_x, max_x)
+            test_y = random.uniform(min_y, max_y)
             
-        Clock.schedule_once(self.hide_tile_values, 0.5)
+            overlap = False
+            for px, py in placed_positions:
+                if abs(px - test_x) < min_dist and abs(py - test_y) < min_dist:
+                    overlap = True
+                    break
+            if not overlap:
+                return test_x, test_y
+                
+        return random.uniform(min_x, max_x), random.uniform(min_y, max_y)
 
     def hide_tile_values(self, dt):
+        # Remove Decoy Cards completely when flash ends
+        for decoy in self.decoy_tiles:
+            if decoy.parent:
+                decoy.parent.remove_widget(decoy)
+        self.decoy_tiles = []
+
         if not self.active_tiles: return
-        self.status_label.font_size = '14sp'
+        self.status_label.font_size = Scale.font(16)
         self.status_label.text = "TAP TILES IN ORDER!"
         for tile in self.active_tiles:
             tile.text = "" 
@@ -1085,14 +2193,14 @@ class FocusFlashScreen(Screen):
         
         if instance.target_value == expected_value:
             instance.text = str(instance.target_value)
-            instance.font_size = '22sp'
+            instance.font_size = Scale.font(20)
             instance.color = (1, 1, 1, 1)
             instance.background_color = (0.1, 0.6, 0.3, 1)
             instance.disabled = True
             self.current_click_index += 1
             
             if self.current_click_index == len(self.target_order):
-                self.status_label.font_size = '18sp'
+                self.status_label.font_size = Scale.font(20)
                 self.status_label.text = "ROUND COMPLETE!"
                 self.round_number += 1
                 Clock.schedule_once(lambda dt: self.show_next_round_button(), 1.0)
@@ -1103,10 +2211,10 @@ class FocusFlashScreen(Screen):
             if self.round_number > self.high_score:
                 self.high_score = self.round_number
                 self.save_high_score()
-                self.status_label.font_size = '14sp'
+                self.status_label.font_size = Scale.font(15)
                 self.status_label.text = f"NEW HIGH SCORE!\nREACHED ROUND {self.round_number}"
             else:
-                self.status_label.font_size = '14sp'
+                self.status_label.font_size = Scale.font(15)
                 self.status_label.text = f"GAME OVER!\nFAILED ON {instance.target_value}"
                 
             self.round_number = 1 
@@ -1125,15 +2233,20 @@ class FocusFlashScreen(Screen):
             
         self.score_label.text = f"ROUND: {self.round_number}  |  BEST: {self.high_score}"
         
-        # 🟢 FIXED: Bring back the entire play_help_row wrapper onto layout stack safely
-        if not self.play_help_row.parent:
-            self.layout.add_widget(self.play_help_row)
+        self.play_help_row.opacity = 1
+        self.play_help_row.disabled = False
+        self.diff_row.opacity = 1
+        self.diff_row.disabled = False
 
     def clear_previous_tiles(self):
         for tile in self.active_tiles:
             if tile.parent:
                 tile.parent.remove_widget(tile)
+        for decoy in self.decoy_tiles:
+            if decoy.parent:
+                decoy.parent.remove_widget(decoy)
         self.active_tiles = []
+        self.decoy_tiles = []
         
 class PlanetHopperScreen(Screen):
     def __init__(self, **kwargs):
@@ -1178,7 +2291,7 @@ class PlanetHopperScreen(Screen):
         
         self.status_label = Label(
             text="TAP START",
-            font_size='18sp',
+            font_size=Scale.font(30),
             font_name='assets/fonts/ARCADE_N.TTF',
             color=(0, 0.75, 1, 1),
             pos_hint={'center_x': 0.5, 'center_y': 0.9}
@@ -1187,7 +2300,7 @@ class PlanetHopperScreen(Screen):
         
         self.back_btn = Button(
             text="< MENU",
-            font_size='10sp',
+            font_size=Scale.font(15),
             font_name='assets/fonts/ARCADE_N.TTF',
             color=(1, 1, 1, 1),
             size_hint=(0.25, 0.05),
@@ -1206,7 +2319,7 @@ class PlanetHopperScreen(Screen):
         self.layout.add_widget(self.play_help_row)
 
         self.start_btn = Button(
-            text="START GAME", font_size='18sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="START GAME", font_size=Scale.font(25), font_name='assets/fonts/ARCADE_N.TTF',
             background_normal='', background_color=(0, 0.75, 1, 1), color=(0.04, 0.06, 0.17, 1),
             size_hint_x=0.8
         )
@@ -1237,7 +2350,7 @@ class PlanetHopperScreen(Screen):
         self.diff_row.add_widget(self.prev_diff_btn)
 
         self.diff_label = Label(
-            text="NORMAL", font_name='assets/fonts/ARCADE_N.TTF', font_size='11sp',
+            text="NORMAL", font_name='assets/fonts/ARCADE_N.TTF', font_size=Scale.font(16),
             color=(1, 1, 1, 1), halign='center'
         )
         self.diff_row.add_widget(self.diff_label)
@@ -1571,7 +2684,7 @@ class StroopMatchScreen(Screen):
         self.bind(pos=self.update_bg, size=self.update_bg)
 
         self.title_label = Label(
-            text="DO THEY MATCH?", font_size='18sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="DO THEY MATCH?", font_size=Scale.font(30), font_name='assets/fonts/ARCADE_N.TTF',
             color=(0, 0.75, 1, 1), pos_hint={'center_x': 0.5, 'center_y': 0.90}
         )
         self.layout.add_widget(self.title_label)
@@ -1634,7 +2747,7 @@ class StroopMatchScreen(Screen):
         self.layout.add_widget(self.play_help_row)
 
         self.start_btn = Button(
-            text="START GAME", font_size='18sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="START GAME", font_size=Scale.font(25), font_name='assets/fonts/ARCADE_N.TTF',
             color=(0.04, 0.06, 0.17, 1), size_hint_x=0.8,
             background_normal='', background_color=(0, 0.75, 1, 1)
         )
@@ -1650,7 +2763,7 @@ class StroopMatchScreen(Screen):
         self.play_help_row.add_widget(self.help_btn)
 
         self.back_btn = Button(
-            text="< MENU", font_size='10sp', font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
+            text="< MENU", font_size=Scale.font(15), font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
             size_hint=(0.25, 0.05), pos_hint={'x': 0.0, 'top': 1},
             background_normal='', background_color=(0.8, 0.25, 0.25, 1)
         )
@@ -1860,14 +2973,14 @@ class AirTrafficControlScreen(Screen):
         self.layout.add_widget(self.planes_count_label)
         
         self.status_label = Label(
-            text="TAP START", font_size='18sp',
+            text="TAP START", font_size=Scale.font(30),
             font_name='assets/fonts/ARCADE_N.TTF', color=(0, 0.75, 1, 1),
             pos_hint={'center_x': 0.5, 'center_y': 0.90}
         )
         self.layout.add_widget(self.status_label)
         
         self.back_btn = Button(
-            text="< MENU", font_size='10sp', font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
+            text="< MENU", font_size=Scale.font(15), font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
             size_hint=(0.25, 0.05), pos_hint={'x': 0.0, 'top': 1},
             background_normal='', background_color=(0.8, 0.25, 0.25, 1)
         )
@@ -1884,7 +2997,7 @@ class AirTrafficControlScreen(Screen):
         self.layout.add_widget(self.play_help_row)
 
         self.start_btn = Button(
-            text="start game", font_size='18sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="start game", font_size=Scale.font(25), font_name='assets/fonts/ARCADE_N.TTF',
             color=(0.04, 0.06, 0.17, 1), size_hint_x=0.8,
             background_normal='', background_color=(0, 0.75, 1, 1)
         )
@@ -2124,12 +3237,18 @@ class AirTrafficControlScreen(Screen):
 
     def render_plane_labels(self, reveal_all=False):
         self.clear_plane_labels()
+        lbl_size = Scale.min_dim(0.08)
+        
         for p in self.planes:
             if self.game_state == "COUNTDOWN" or reveal_all:
                 lbl = Label(
-                    text=str(p['id']), font_size='14sp', font_name='assets/fonts/ARCADE_N.TTF',
-                    color=(1, 1, 1, 1) if not reveal_all else (1, 0.84, 0, 1), size_hint=(None, None),
-                    size=(30, 30), pos=(p['pos'][0] - 15, p['pos'][1] + 35)
+                    text=str(p['id']), 
+                    font_size=Scale.font(14), 
+                    font_name='assets/fonts/ARCADE_N.TTF',
+                    color=(0, 0.75, 1, 1) if not reveal_all else (1, 0.84, 0, 1), 
+                    size_hint=(None, None),
+                    size=(lbl_size, lbl_size), 
+                    pos=(p['pos'][0] - (lbl_size / 2), p['pos'][1] + Scale.height_pct(0.04))
                 )
                 self.layout.add_widget(lbl)
 
@@ -2219,7 +3338,7 @@ class CodeCaptureScreen(Screen):
         self.layout.add_widget(self.code_display)
         
         self.back_btn = Button(
-            text="< MENU", font_size='10sp', font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
+            text="< MENU", font_size=Scale.font(15), font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
             size_hint=(0.25, 0.05), pos_hint={'x': 0.0, 'top': 1},
             background_normal='', background_color=(0.8, 0.25, 0.25, 1)
         )
@@ -2235,7 +3354,7 @@ class CodeCaptureScreen(Screen):
         self.layout.add_widget(self.play_help_row)
 
         self.start_btn = Button(
-            text="START GAME", font_size='18sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="START GAME", font_size=Scale.font(25), font_name='assets/fonts/ARCADE_N.TTF',
             color=(0.04, 0.06, 0.17, 1), size_hint_x=0.8,
             background_normal='', background_color=(0, 0.75, 1, 1)
         )
@@ -2326,7 +3445,7 @@ class CodeCaptureScreen(Screen):
         for digit in ['1', '2', '3', '4', '5', '6', '7', '8', '9', 'CLR', '0', 'SUB']:
             btn = Button(
                 text=digit, font_name='assets/fonts/ARCADE_N.TTF', font_size='18sp',
-                background_normal='', background_color=(0.04, 0.06, 0.17, 1) if digit not in ['CLR','SUB'] else (0.6, 0.2, 0.2, 1) if digit=='CLR' else (0, 0.5, 0.8, 1)
+                background_normal='', background_color=(0.04, 0.06, 0.17, 1) if digit not in ['CLR','SUB'] else (0.8, 0.2, 0.2, 1) if digit=='CLR' else (0, 0.5, 0.8, 1)
             )
             btn.bind(on_release=self.handle_numpad_press)
             self.numpad.add_widget(btn)
@@ -2498,7 +3617,7 @@ class PointVelocityScreen(Screen):
         self.load_high_score()
 
         self.title_label = Label(
-            text="SWIPE FOCUS", font_size='18sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="SWIPE FOCUS", font_size=Scale.font(30), font_name='assets/fonts/ARCADE_N.TTF',
             color=(0, 0.75, 1, 1), pos_hint={'center_x': 0.5, 'center_y': 0.90}
         )
         self.layout.add_widget(self.title_label)
@@ -2522,7 +3641,7 @@ class PointVelocityScreen(Screen):
         self.layout.add_widget(self.hi_score_label)
 
         self.back_btn = Button(
-            text="< MENU", font_size='10sp', font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
+            text="< MENU", font_size=Scale.font(15), font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
             size_hint=(0.25, 0.05), pos_hint={'x': 0.0, 'top': 1},
             background_normal='', background_color=(0.8, 0.25, 0.25, 1)
         )
@@ -2539,7 +3658,7 @@ class PointVelocityScreen(Screen):
         self.layout.add_widget(self.play_help_row)
 
         self.start_btn = Button(
-            text="START GAME", font_size='18sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="START GAME", font_size=Scale.font(25), font_name='assets/fonts/ARCADE_N.TTF',
             color=(0.04, 0.06, 0.17, 1), size_hint_x=0.8,
             background_normal='', background_color=(0, 0.75, 1, 1)
         )
@@ -2751,6 +3870,7 @@ class PointVelocityScreen(Screen):
             self.stop_game_engine()
 
     def stop_game_engine(self):
+        record_jbrcade_game_score("point_velocity", self.score)
         self.game_active = False
         if self.timer_event: Clock.unschedule(self.timer_event); self.timer_event = None
         if self.physics_event: Clock.unschedule(self.physics_event); self.physics_event = None
@@ -2832,7 +3952,7 @@ class ConsecutiveShapesScreen(Screen):
         self.layout.add_widget(self.hi_score_label)
 
         self.back_btn = Button(
-            text="< MENU", font_size='10sp', font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
+            text="< MENU", font_size=Scale.font(15), font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
             size_hint=(0.25, 0.05), pos_hint={'x': 0.0, 'top': 1.0},
             background_normal='', background_color=(0.8, 0.25, 0.25, 1)
         )
@@ -2863,7 +3983,7 @@ class ConsecutiveShapesScreen(Screen):
         self.layout.add_widget(self.play_help_row)
 
         self.start_btn = Button(
-            text="START GAME", font_size='18sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="START GAME", font_size=Scale.font(25), font_name='assets/fonts/ARCADE_N.TTF',
             color=(0.04, 0.06, 0.17, 1), size_hint_x=0.8,
             background_normal='', background_color=(0, 0.75, 1, 1)
         )
@@ -3108,7 +4228,7 @@ class MatrixRecallScreen(Screen):
         self.load_high_score()
 
         self.title_label = Label(
-            text="MATRIX RECALL", font_size='18sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="MATRIX RECALL", font_size=Scale.font(30), font_name='assets/fonts/ARCADE_N.TTF',
             color=(0, 0.75, 1, 1), pos_hint={'center_x': 0.5, 'center_y': 0.92}
         )
         self.layout.add_widget(self.title_label)
@@ -3132,7 +4252,7 @@ class MatrixRecallScreen(Screen):
         self.layout.add_widget(self.hi_score_label)
 
         self.back_btn = Button(
-            text="< MENU", font_size='10sp', font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
+            text="< MENU", font_size=Scale.font(15), font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
             size_hint=(0.25, 0.05), pos_hint={'x': 0.0, 'top': 1.0},
             background_normal='', background_color=(0.8, 0.25, 0.25, 1)
         )
@@ -3159,7 +4279,7 @@ class MatrixRecallScreen(Screen):
         self.layout.add_widget(self.play_help_row)
 
         self.start_btn = Button(
-            text="START GAME", font_size='16sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="START GAME", font_size=Scale.font(25), font_name='assets/fonts/ARCADE_N.TTF',
             color=(0.04, 0.06, 0.17, 1), size_hint_x=0.8,
             background_normal='', background_color=(0, 0.75, 1, 1)
         )
@@ -3424,7 +4544,7 @@ class RotationalMazeScreen(Screen):
         self.layout.add_widget(self.hi_score_label)
 
         self.back_btn = Button(
-            text="< MENU", font_size='10sp', font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
+            text="< MENU", font_size=Scale.font(15), font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
             size_hint=(0.25, 0.05), pos_hint={'x': 0.0, 'top': 1},
             background_normal='', background_color=(0.8, 0.25, 0.25, 1)
         )
@@ -3455,7 +4575,7 @@ class RotationalMazeScreen(Screen):
         self.layout.add_widget(self.play_help_row)
 
         self.start_btn = Button(
-            text="START GAME", font_size='18sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="START GAME", font_size=Scale.font(25), font_name='assets/fonts/ARCADE_N.TTF',
             color=(0.04, 0.06, 0.17, 1), size_hint_x=0.8,
             background_normal='', background_color=(0, 0.75, 1, 1)
         )
@@ -3673,17 +4793,18 @@ class SinkyStoneScreen(Screen):
         self.high_score = 0
         self.game_active = False
         
-        self.player_y = Window.height * 0.5
+        self.player_y = Scale.height_pct(0.5)
         self.player_velocity = 0
-        self.gravity = 0.5            
-        self.jump_force = -20.0       
-        self.player_radius = Window.width * 0.04
-        self.player_x = Window.width * 0.25
+        # Inverted Physics scaled via Scale utility
+        self.gravity = Scale.vel_h(0.5)            
+        self.jump_force = Scale.vel_h(-12.0)       
+        self.player_radius = Scale.min_dim(0.04)
+        self.player_x = Scale.width_pct(0.25)
         
         self.bubbles = []            
         self.pipes = []              
-        self.pipe_width = Window.width * 0.14
-        self.pipe_gap_height = Window.height * 0.26
+        self.pipe_width = Scale.min_dim(0.14)
+        self.pipe_gap_height = Scale.height_pct(0.26)
         self.game_event = None
         self.load_high_score()
 
@@ -3696,36 +4817,36 @@ class SinkyStoneScreen(Screen):
         self.bind(pos=self.update_bg, size=self.update_bg)
 
         self.score_label = Label(
-            text="SCORE: 0", font_size='14sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="SCORE: 0", font_size=Scale.font(14), font_name='assets/fonts/ARCADE_N.TTF',
             color=(0.1, 0.25, 0.25, 1), pos_hint={'center_x': 0.3, 'center_y': 0.85}
         )
         self.layout.add_widget(self.score_label)
 
         self.hi_score_label = Label(
-            text=f"BEST: {self.high_score}", font_size='14sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text=f"BEST: {self.high_score}", font_size=Scale.font(14), font_name='assets/fonts/ARCADE_N.TTF',
             color=(0.1, 0.25, 0.25, 1), pos_hint={'center_x': 0.7, 'center_y': 0.85}
         )
         self.layout.add_widget(self.hi_score_label)
 
         self.back_btn = Button(
-            text="< MENU", font_size='10sp', font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
+            text="< MENU", font_size=Scale.font(15), font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
             size_hint=(0.25, 0.05), pos_hint={'x': 0.0, 'top': 1.0},
             background_normal='', background_color=(0.75, 0.25, 0.25, 1)
         )
         self.back_btn.bind(on_release=self.go_back_to_menu)
         self.layout.add_widget(self.back_btn)
 
-        # 🟢 ROW WRAPPER
+        # Action Control Row
         self.play_help_row = BoxLayout(
             orientation='horizontal',
             spacing=dp(10),
-            size_hint=(0.9,0.1),
+            size_hint=(0.9, 0.1),
             pos_hint={'center_x': 0.5, 'center_y': 0.2}
         )
         self.layout.add_widget(self.play_help_row)
 
         self.start_btn = Button(
-            text="DROP STONE", font_size='14sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="DROP STONE", font_size=Scale.font(30), font_name='assets/fonts/ARCADE_N.TTF',
             color=(1, 1, 1, 1), size_hint_x=0.8,
             background_normal='', background_color=(0.15, 0.25, 0.25, 1)
         )
@@ -3733,7 +4854,7 @@ class SinkyStoneScreen(Screen):
         self.play_help_row.add_widget(self.start_btn)
 
         self.help_btn = Button(
-            text="?", font_size='16sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="?", font_size=Scale.font(16), font_name='assets/fonts/ARCADE_N.TTF',
             background_normal='', background_color=(0.15, 0.25, 0.25, 1), color=(1, 1, 1, 1),
             size_hint_x=0.2
         )
@@ -3767,6 +4888,11 @@ class SinkyStoneScreen(Screen):
     def update_bg(self, *args):
         self.bg_rect.pos = self.pos
         self.bg_rect.size = self.size
+        # Re-calc relative geometry parameters upon window resize
+        self.player_x = Scale.width_pct(0.25)
+        self.player_radius = Scale.min_dim(0.04)
+        self.pipe_width = Scale.min_dim(0.14)
+        self.pipe_gap_height = Scale.height_pct(0.26)
         self.draw_game_elements()
 
     def go_back_to_menu(self, instance):
@@ -3800,23 +4926,24 @@ class SinkyStoneScreen(Screen):
         for _ in range(25):
             self.bubbles.append({
                 'pos': [random.uniform(0, Window.width), random.uniform(0, Window.height)],
-                'size': random.uniform(dp(4), dp(12)), 'speed': random.uniform(Window.width * 0.001, Window.width * 0.004)
+                'size': random.uniform(Scale.font(4), Scale.font(12)), 
+                'speed': random.uniform(Scale.vel_w(0.5), Scale.vel_w(2.0))
             })
 
     def start_game(self, instance):
         self.layout.remove_widget(self.play_help_row)
         self.score = 0
         self.score_label.text = "SCORE: 0"
-        self.player_y = Window.height * 0.5
+        self.player_y = Scale.height_pct(0.5)
         self.player_velocity = 0
         self.pipes = []
         self.spawn_pipe()
         self.game_active = True
         if self.game_event: Clock.unschedule(self.game_event)
-        self.game_event = Clock.schedule_interval(self.update_game_physics, 2.0 / 60.0)
+        self.game_event = Clock.schedule_interval(self.update_game_physics, 1.0 / 60.0)
 
     def spawn_pipe(self):
-        gap_y = random.uniform(Window.height * 0.20, Window.height * 0.65)
+        gap_y = random.uniform(Scale.height_pct(0.20), Scale.height_pct(0.65))
         self.pipes.append({'x': Window.width + dp(20), 'gap_y': gap_y, 'gap_h': self.pipe_gap_height, 'passed': False})
 
     def on_touch_down(self, touch):
@@ -3828,23 +4955,32 @@ class SinkyStoneScreen(Screen):
 
     def update_game_physics(self, dt):
         if not self.game_active: return
+        
         for b in self.bubbles:
             b['pos'][0] -= b['speed'] * (dt * 60.0)
             if b['pos'][0] < -b['size']:
                 b['pos'][0] = Window.width + b['size']
                 b['pos'][1] = random.uniform(0, Window.height)
+                
         self.player_velocity += self.gravity * (dt * 60.0)
         self.player_y += self.player_velocity * (dt * 60.0)
+        
         if self.player_y >= Window.height or self.player_y <= 0:
             self.trigger_game_over()
             trigger_haptic_feedback(0.08)
             return
+            
         pipes_to_remove = []
         spawn_new = False
+        scroll_speed = Scale.vel_w(3.0) * (dt * 60.0)
+        
         for p in self.pipes:
-            p['x'] -= Window.width * 0.006 * (dt * 60.0) 
-            if len(self.pipes) == 1 and p['x'] < Window.width * 0.45: spawn_new = True
-            if p['x'] < -self.pipe_width: pipes_to_remove.append(p)
+            p['x'] -= scroll_speed
+            if len(self.pipes) == 1 and p['x'] < Window.width * 0.45: 
+                spawn_new = True
+            if p['x'] < -self.pipe_width: 
+                pipes_to_remove.append(p)
+                
             if not p['passed'] and p['x'] + self.pipe_width < self.player_x:
                 p['passed'] = True
                 self.score += 1
@@ -3853,17 +4989,23 @@ class SinkyStoneScreen(Screen):
                     self.high_score = self.score
                     self.hi_score_label.text = f"BEST: {self.high_score}"
                     self.save_high_score()
+                    
             r = self.player_radius
             stone_left, stone_right = self.player_x - r + dp(2), self.player_x + r - dp(2)
             stone_bottom, stone_top = self.player_y - r + dp(2), self.player_y + r - dp(2)
             pipe_left, pipe_right = p['x'], p['x'] + self.pipe_width
+            
             if pipe_left < stone_right and pipe_right > stone_left:
                 if stone_top > (p['gap_y'] + p['gap_h']) or stone_bottom < p['gap_y']:
                     self.trigger_game_over()
                     trigger_haptic_feedback(0.08)
                     return
-        if spawn_new: self.spawn_pipe()
-        for r_p in pipes_to_remove: self.pipes.remove(r_p)
+                    
+        if spawn_new: 
+            self.spawn_pipe()
+        for r_p in pipes_to_remove: 
+            self.pipes.remove(r_p)
+            
         self.draw_game_elements()
 
     def draw_game_elements(self):
@@ -3891,7 +5033,7 @@ class SinkyStoneScreen(Screen):
 
     def clear_board_completely(self):
         self.pipes = []
-        self.player_y = Window.height * 0.5
+        self.player_y = Scale.height_pct(0.5)
         self.player_velocity = 0
         self.canvas.before.remove_group('sinky_shapes')
 
@@ -3925,7 +5067,7 @@ class GridLockScreen(Screen):
         self.bind(pos=self.update_bg, size=self.update_bg)
 
         self.title_label = Label(
-            text="GRID LOCK", font_size='18sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="GRID LOCK", font_size=Scale.font(30), font_name='assets/fonts/ARCADE_N.TTF',
             color=(0, 0.75, 1, 1), pos_hint={'center_x': 0.5, 'center_y': 0.96}
         )
         self.layout.add_widget(self.title_label)
@@ -3956,7 +5098,7 @@ class GridLockScreen(Screen):
         self.layout.add_widget(self.status_label)
 
         self.back_btn = Button(
-            text="< MENU", font_size='10sp', font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
+            text="< MENU", font_size=Scale.font(15), font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
             size_hint=(0.25, 0.05), pos_hint={'x': 0.0, 'top': 1}
         )
         self.back_btn.background_normal = ''
@@ -3994,7 +5136,7 @@ class GridLockScreen(Screen):
         self.layout.add_widget(self.play_help_row)
 
         self.start_btn = Button(
-            text="START GAME", font_size='18sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="START GAME", font_size=Scale.font(25), font_name='assets/fonts/ARCADE_N.TTF',
             color=(0.04, 0.06, 0.17, 1), size_hint_x=0.8
         )
         self.start_btn.background_normal = ''
@@ -4293,7 +5435,7 @@ class AgainstGrainScreen(Screen):
         
         # Standard Pinned Top-Left Back Button Configuration
         self.back_btn = Button(
-            text="< MENU", font_size='10sp', font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
+            text="< MENU", font_size=Scale.font(15), font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
             size_hint=(0.25, 0.05), pos_hint={'x': 0.0, 'top': 1.0},
             background_normal='', background_color=(0.8, 0.25, 0.25, 1)
         )
@@ -4310,7 +5452,7 @@ class AgainstGrainScreen(Screen):
         self.layout.add_widget(self.play_help_row)
 
         self.start_btn = Button(
-            text="START GAME", font_size='18sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="START GAME", font_size=Scale.font(25), font_name='assets/fonts/ARCADE_N.TTF',
             color=(0.04, 0.06, 0.17, 1), size_hint_x=0.8,
             background_normal='', background_color=(0, 0.75, 1, 1)
         )
@@ -4605,7 +5747,7 @@ class HigherEquationScreen(Screen):
         self.layout.add_widget(self.hi_score_label)
 
         self.back_btn = Button(
-            text="< MENU", font_size='10sp', font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
+            text="< MENU", font_size=Scale.font(15), font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
             size_hint=(0.25, 0.05), pos_hint={'x': 0.0, 'top': 1.0},
             background_normal='', background_color=(0.8, 0.25, 0.25, 1)
         )
@@ -4636,7 +5778,7 @@ class HigherEquationScreen(Screen):
         self.layout.add_widget(self.play_help_row)
 
         self.start_btn = Button(
-            text="START GAME", font_size='18sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="START GAME", font_size=Scale.font(25), font_name='assets/fonts/ARCADE_N.TTF',
             color=(0.04, 0.06, 0.17, 1), size_hint_x=0.8,
             background_normal='', background_color=(0, 0.75, 1, 1)
         )
@@ -4869,7 +6011,7 @@ class WhatsNextScreen(Screen):
         self.layout.add_widget(self.status_label)
 
         self.back_btn = Button(
-            text="< MENU", font_size='10sp', font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
+            text="< MENU", font_size=Scale.font(15), font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
             size_hint=(0.25, 0.05), pos_hint={'x': 0.0, 'top': 1},
             background_normal='', background_color=(0.8, 0.25, 0.25, 1)
         )
@@ -4893,7 +6035,7 @@ class WhatsNextScreen(Screen):
         self.layout.add_widget(self.play_help_row)
 
         self.start_btn = Button(
-            text="START GAME", font_size='18sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="START GAME", font_size=Scale.font(25), font_name='assets/fonts/ARCADE_N.TTF',
             color=(0.04, 0.06, 0.17, 1), size_hint_x=0.8,
             background_normal='', background_color=(0, 0.75, 1, 1)
         )
@@ -5146,7 +6288,7 @@ class WaiterWaiterScreen(Screen):
         self.bind(pos=self.update_bg, size=self.update_bg)
 
         self.title_label = Label(
-            text="WAITER WAITER", font_size='16sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="WAITER WAITER", font_size=Scale.font(30), font_name='assets/fonts/ARCADE_N.TTF',
             color=(0, 0.75, 1, 1), pos_hint={'center_x': 0.5, 'center_y': 0.9}
         )
         self.layout.add_widget(self.title_label)
@@ -5177,7 +6319,7 @@ class WaiterWaiterScreen(Screen):
         self.layout.add_widget(self.score_label)
 
         self.back_btn = Button(
-            text="< MENU", font_size='10sp', font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
+            text="< MENU", font_size=Scale.font(15), font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
             size_hint=(0.25, 0.05), pos_hint={'x': 0.0, 'top': 1.0},
             background_normal='', background_color=(0.8, 0.25, 0.25, 1)
         )
@@ -5194,7 +6336,7 @@ class WaiterWaiterScreen(Screen):
         self.layout.add_widget(self.play_help_row)
 
         self.start_btn = Button(
-            text="START GAME", font_size='18sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="START GAME", font_size=Scale.font(25), font_name='assets/fonts/ARCADE_N.TTF',
             color=(0.04, 0.06, 0.17, 1), size_hint_x=0.8,
             background_normal='', background_color=(0, 0.75, 1, 1)
         )
@@ -5246,6 +6388,7 @@ class WaiterWaiterScreen(Screen):
     def setup_tables(self):
         self.tables = []
         self.table_labels = []
+        lbl_dim = Scale.min_dim(0.08)
         for room_idx in range(2):
             for r in range(3):
                 for c in range(3):
@@ -5256,7 +6399,14 @@ class WaiterWaiterScreen(Screen):
                         'wait_time': 0.0, 'eat_time': 0.0, 'max_eat': 0.0,
                         'grid_pos': (r, c), 'room_idx': room_idx
                     })
-                    lbl = Label(text="", font_size='14sp', font_name='assets/fonts/ARCADE_N.TTF', color=(1,1,1,1), size_hint=(None, None), size=(dp(30), dp(30)))
+                    lbl = Label(
+                        text="", 
+                        font_size=Scale.font(14), 
+                        font_name='assets/fonts/ARCADE_N.TTF', 
+                        color=(1, 1, 1, 1), 
+                        size_hint=(None, None), 
+                        size=(lbl_dim, lbl_dim)
+                    )
                     self.layout.add_widget(lbl)
                     self.table_labels.append(lbl)
 
@@ -5352,9 +6502,11 @@ class WaiterWaiterScreen(Screen):
                     self.queue_label.text = f"QUEUE: {self.total_customers}"
                     self.seat_cooldown = random.uniform(1.0, 2.2)
         active_tables_exist = False
+        lbl_offset = Scale.min_dim(0.0)
         for idx, t in enumerate(self.tables):
             render_x = t['base_cx'] + (t['room_idx'] * Window.width) - self.room_view_x
-            self.table_labels[idx].pos = (render_x - dp(15), t['cy'] + t['radius'] * 0.7)
+            # Position text label right above the table center
+            self.table_labels[idx].pos = (render_x - lbl_offset, t['cy'] + t['radius'] * 0.6)
             if t['room_idx'] >= self.max_rooms:
                 self.table_labels[idx].text = ""
                 continue
@@ -5383,8 +6535,13 @@ class WaiterWaiterScreen(Screen):
         self.canvas.remove_group('waiter_shapes')
         if not self.game_active: return
         with self.canvas:
-            k_width, k_start_x, k_y, k_h = Window.width * 0.9, Window.width * 0.05, Window.height * 0.10, Window.height * 0.08
+            k_width = Scale.width_pct(0.9)
+            k_start_x = Scale.width_pct(0.05)
+            k_y = Scale.height_pct(0.10)
+            k_h = Scale.height_pct(0.08)
             slot_w = k_width / 4
+            
+            # Bottom Tray Items
             for i, menu in enumerate(self.menu_items):
                 slot_x = k_start_x + (i * slot_w)
                 if self.selected_menu_idx == i:
@@ -5394,27 +6551,41 @@ class WaiterWaiterScreen(Screen):
                 Line(rectangle=(slot_x, k_y, slot_w, k_h), width=dp(1.5), group='waiter_shapes')
                 Color(*menu['color'], group='waiter_shapes')
                 self.draw_vector_shape_geometry(menu['type'], slot_x + slot_w/2, k_y + k_h/2, min(slot_w, k_h) * 0.5, group='waiter_shapes')
+            
+            # Dining Tables & Order Icons (Rendered on top of tables)
             for idx, t in enumerate(self.tables):
                 if t['room_idx'] >= self.max_rooms: continue
                 render_x = t['base_cx'] + (t['room_idx'] * Window.width) - self.room_view_x
                 tr = t['radius']
+                
+                # 1. Base Table Graphic
                 Color(0.55, 0.27, 0.07, 1, group='waiter_shapes') 
                 Ellipse(pos=(render_x - tr, t['cy'] - tr), size=(tr*2, tr*2), group='waiter_shapes')
+                
+                # 2. Waiting Timer & Requested Food Item Overlay
                 if t['state'] == 'WAITING':
                     Color(1, 0.85, 0, 0.5, group='waiter_shapes')
                     angle = (t['wait_time'] / self.CUSTOMER_WAIT_LIMIT) * 360
                     Ellipse(pos=(render_x - tr, t['cy'] - tr), size=(tr*2, tr*2), angle_start=0, angle_end=angle, group='waiter_shapes')
                     Color(*self.menu_items[t['menu_idx']]['color'], group='waiter_shapes')
-                    tiny_size = Window.width * 0.035
-                    self.draw_vector_shape_geometry(self.menu_items[t['menu_idx']]['type'], render_x + dp(12), t['cy'] + tr * 0.7 + dp(15), tiny_size, group='waiter_shapes')
+                    tiny_size = Scale.min_dim(0.045)
+                    # Drawn cleanly above table surface center
+                    self.draw_vector_shape_geometry(
+                        self.menu_items[t['menu_idx']]['type'], 
+                        render_x, 
+                        t['cy'] + Scale.height_pct(0.0), 
+                        tiny_size, 
+                        group='waiter_shapes'
+                    )
                 elif t['state'] == 'EATING':
                     Color(0.1, 0.9, 0.2, 0.6, group='waiter_shapes')
                     angle = (t['eat_time'] / t['max_eat']) * 360
                     Ellipse(pos=(render_x - tr, t['cy'] - tr), size=(tr*2, tr*2), angle_start=0, angle_end=angle, group='waiter_shapes')
+                    
             if self.current_room < self.max_rooms - 1:
                 flash_opacity = abs(math.sin(self.global_timer * 5.0))
                 Color(1, 0.15, 0.15, flash_opacity, group='waiter_shapes')
-                ax, ay, aw = Window.width * 0.92, Window.height * 0.86, dp(14)
+                ax, ay, aw = Scale.width_pct(0.92), Scale.height_pct(0.86), dp(14)
                 Mesh(vertices=[ax, ay + aw, 0, 0, ax + aw, ay, 0, 0, ax, ay - aw, 0, 0], indices=[0, 1, 2], mode='triangles', group='waiter_shapes')
 
     def draw_vector_shape_geometry(self, stype, cx, cy, sz, group=None):
@@ -5546,7 +6717,7 @@ class GateKeeperScreen(Screen):
         self.load_high_score()
 
         self.title_label = Label(
-            text="GATE KEEPER", font_size='16sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="GATE KEEPER", font_size=Scale.font(30), font_name='assets/fonts/ARCADE_N.TTF',
             color=(0, 0.75, 1, 1), pos_hint={'center_x': 0.5, 'center_y': 0.9}
         )
         self.layout.add_widget(self.title_label)
@@ -5576,7 +6747,7 @@ class GateKeeperScreen(Screen):
         self.layout.add_widget(self.score_label)
 
         self.back_btn = Button(
-            text="< MENU", font_size='10sp', font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
+            text="< MENU", font_size=Scale.font(15), font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
             size_hint=(0.25, 0.05), pos_hint={'x': 0.0, 'top': 1.0},
             background_normal='', background_color=(0.8, 0.25, 0.25, 1)
         )
@@ -5593,7 +6764,7 @@ class GateKeeperScreen(Screen):
         self.layout.add_widget(self.play_help_row)
 
         self.start_btn = Button(
-            text="START GAME", font_size='18sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="START GAME", font_size=Scale.font(25), font_name='assets/fonts/ARCADE_N.TTF',
             color=(0.04, 0.06, 0.17, 1), size_hint_x=0.8,
             background_normal='', background_color=(0, 0.75, 1, 1)
         )
@@ -5804,9 +6975,59 @@ class GateKeeperScreen(Screen):
             self.trigger_game_over()
             trigger_haptic_feedback(0.08)
 
+    def check_achievements(self):
+        """Unlocks achievements based on completed flawless rounds."""
+        if self.incorrect_leaked == 0:
+            completed_rounds = self.round_number - 1
+            if completed_rounds >= 3:
+                self.unlock_achievement('gatekeeper_flawless_3')
+            if completed_rounds >= 6:
+                self.unlock_achievement('gatekeeper_flawless_6')
+            if completed_rounds >= 9:
+                self.unlock_achievement('gatekeeper_flawless_9')
+
+    def unlock_achievement(self, achievement_id):
+        try:
+            data = {}
+            if os.path.exists('save_data.json'):
+                with open('save_data.json', 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+            
+            achievements = data.get('achievements', {})
+            if not achievements.get(achievement_id, False):
+                achievements[achievement_id] = True
+                data['achievements'] = achievements
+                
+                with open('save_data.json', 'w', encoding='utf-8') as f:
+                    json.dump(data, f)
+                
+                trigger_haptic_feedback(0.2)
+        except Exception:
+            pass
+
+    def evaluate_round_end_condition(self):
+        self.game_active = False
+        if self.game_event: 
+            Clock.unschedule(self.game_event)
+            self.game_event = None
+            
+        if self.correct_passed > 0 and self.incorrect_leaked < (self.correct_passed / 2.0):
+            self.round_number += 1
+            self.title_label.text = "DEFENSE SECURED!"
+            self.title_label.color = (0.1, 0.9, 0.3, 1)
+            
+            # Check flawless achievements on each round completion!
+            self.check_achievements()
+            
+            Clock.schedule_once(lambda dt: self.start_round(), 1.5)
+        else:
+            self.trigger_game_over()
+            trigger_haptic_feedback(0.08)
+    
     def trigger_game_over(self):
         self.game_active = False
         if self.game_event: Clock.unschedule(self.game_event); self.game_event = None
+        self.check_achievements()
         self.canvas.remove_group('gatekeeper_shapes')
         self.title_label.text = "GATES BREACHED!"
         self.title_label.color = (0.9, 0.2, 0.2, 1)
@@ -5862,7 +7083,7 @@ class DropOffScreen(Screen):
         self.bind(pos=self.update_bg, size=self.update_bg)
 
         self.title_label = Label(
-            text="DROP OFF", font_size='16sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="DROP OFF", font_size=Scale.font(30), font_name='assets/fonts/ARCADE_N.TTF',
             color=(0, 0.75, 1, 1), pos_hint={'center_x': 0.5, 'center_y': 0.95}
         )
         self.layout.add_widget(self.title_label)
@@ -5892,7 +7113,7 @@ class DropOffScreen(Screen):
         self.layout.add_widget(self.score_label)
 
         self.back_btn = Button(
-            text="< MENU", font_size='10sp', font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
+            text="< MENU", font_size=Scale.font(15), font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
             size_hint=(0.25, 0.05), pos_hint={'x': 0.0, 'top': 1.0},
             background_normal='', background_color=(0.8, 0.25, 0.25, 1)
         )
@@ -5909,7 +7130,7 @@ class DropOffScreen(Screen):
         self.layout.add_widget(self.play_help_row)
 
         self.start_btn = Button(
-            text="START GAME", font_size='18sp', font_name='assets/fonts/ARCADE_N.TTF',
+            text="START GAME", font_size=Scale.font(25), font_name='assets/fonts/ARCADE_N.TTF',
             color=(0.04, 0.06, 0.17, 1), size_hint_x=0.8,
             background_normal='', background_color=(0, 0.75, 1, 1)
         )
@@ -6196,26 +7417,38 @@ class DynamicCircle(Widget):
 class ZenBreathingScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.session_time = 180  # 3 minutes
+        self.session_time = 180  # 3 minutes default
         self.time_remaining = self.session_time
         self.is_active = False
         self.current_state = 0
         self.timer_event = None
         self.current_anim = None
         
-        # Breathing Profiles: (Inhale, Hold In, Exhale, Hold Out)
+        # Breathing Exercises Carousel Registry (Presets + Custom)
+        self.exercise_keys = [
+            "4-4-4-4",
+            "4-7-8",
+            "5.5-5.5",
+            "2-4 (pursed lips)",
+            "CUSTOM"
+        ]
+        self.selected_index = 0
+        
+        # Default Custom Timers (Inhale, Hold In, Exhale, Hold Out)
+        self.custom_timers = [4.0, 4.0, 4.0, 4.0]
+        self.load_custom_timers()
+        
+        # Preset Timings Map
         self.profiles = {
             "4-4-4-4": (4.0, 4.0, 4.0, 4.0),
             "4-7-8": (4.0, 7.0, 8.0, 0.0),
             "5.5-5.5": (5.5, 0.0, 5.5, 0.0),
             "2-4 (pursed lips)": (2.0, 0.0, 4.0, 0.0)
         }
-        self.exercise_keys = list(self.profiles.keys())
-        self.selected_index = 0
         
         # --- BACKGROUND ---
         with self.canvas.before:
-            Color(0.04, 0.06, 0.17, 1) # Deep Cosmic Background
+            Color(0.04, 0.06, 0.17, 1)  # Deep Cosmic Background
             self.bg_rect = Rectangle(pos=self.pos, size=self.size)
         self.bind(pos=self._update_bg, size=self._update_bg)
         
@@ -6239,7 +7472,7 @@ class ZenBreathingScreen(Screen):
             font_name="assets/fonts/ARCADE_N.TTF",
             font_size='18sp',
             color=(0.47, 0.87, 0.47, 1),
-            pos_hint={'center_x': 0.5, 'center_y': 0.75},
+            pos_hint={'center_x': 0.5, 'center_y': 0.78},
             size_hint=(1, 0.1)
         )
         self.main_layout.add_widget(self.instruction_label)
@@ -6247,11 +7480,11 @@ class ZenBreathingScreen(Screen):
         # --- BREATHING VISUALS ---
         self.breathing_area = RelativeLayout(
             size_hint=(None, None),
-            size=(dp(250), dp(250)),
-            pos_hint={'center_x': 0.5, 'center_y': 0.5}
+            size=(dp(230), dp(250)),
+            pos_hint={'center_x': 0.5, 'center_y': 0.53}
         )
         
-        # Static Diaphragm Circle (Filled, semi-transparent)
+        # Static Diaphragm Circle (Centered 1:1 Aspect Ratio Circle)
         with self.breathing_area.canvas.before:
             Color(0.47, 0.87, 0.47, 0.15)  # Soft Pastel Green Fill
             self.diaphragm = Ellipse()
@@ -6262,27 +7495,41 @@ class ZenBreathingScreen(Screen):
             size_hint=(None, None),
             size=(dp(50), dp(50))
         )
-        self.dynamic_circle.pos = (dp(125) - dp(25), dp(125) - dp(25))
+        self.dynamic_circle.pos = (dp(115) - dp(25), dp(125) - dp(25))
         self.breathing_area.add_widget(self.dynamic_circle)
         
         self.main_layout.add_widget(self.breathing_area)
         
+        # --- CUSTOM TIMERS CONTROL PANEL ---
+        self.custom_panel = BoxLayout(
+            orientation='horizontal',
+            size_hint=(0.95, 0.08),
+            pos_hint={'center_x': 0.5, 'y': 0.25},
+            spacing=dp(4),
+            opacity=0,
+            disabled=True
+        )
+        self.custom_labels = []
+        self.build_custom_panel_ui()
+        self.main_layout.add_widget(self.custom_panel)
+
         # --- CONTROLS ---
         self.controls_layout = BoxLayout(
             orientation='vertical',
-            size_hint=(0.8, 0.2),
-            pos_hint={'center_x': 0.5, 'y': 0.05},
+            size_hint=(0.85, 0.2),
+            pos_hint={'center_x': 0.5, 'y': 0.04},
             spacing=dp(10)
         )
         
+        # Multi-state Play/End Action Button
         self.play_btn = Button(
             text="START SESSION",
             font_name="assets/fonts/ARCADE_N.TTF",
-            font_size='12sp',
+            font_size=Scale.font(16),
             background_normal='',
             background_color=(0.1, 0.6, 0.3, 1)
         )
-        self.play_btn.bind(on_release=self.start_session)
+        self.play_btn.bind(on_release=self.toggle_session)
         
         # --- Custom [<] Exercise [>] Selector Layout ---
         self.selector_layout = BoxLayout(
@@ -6294,7 +7541,7 @@ class ZenBreathingScreen(Screen):
         self.prev_btn = Button(
             text="<",
             font_name="assets/fonts/ARCADE_N.TTF",
-            font_size='14sp',
+            font_size=Scale.font(16),
             size_hint=(0.2, 1),
             background_normal='',
             background_color=(0.2, 0.2, 0.3, 1)
@@ -6304,7 +7551,7 @@ class ZenBreathingScreen(Screen):
         self.exercise_label = Label(
             text=self.exercise_keys[self.selected_index],
             font_name="assets/fonts/ARCADE_N.TTF",
-            font_size='10sp',
+            font_size=Scale.font(12),
             color=(1, 1, 1, 1),
             size_hint=(0.6, 1)
         )
@@ -6312,7 +7559,7 @@ class ZenBreathingScreen(Screen):
         self.next_btn = Button(
             text=">",
             font_name="assets/fonts/ARCADE_N.TTF",
-            font_size='14sp',
+            font_size=Scale.font(16),
             size_hint=(0.2, 1),
             background_normal='',
             background_color=(0.2, 0.2, 0.3, 1)
@@ -6327,11 +7574,11 @@ class ZenBreathingScreen(Screen):
         self.controls_layout.add_widget(self.selector_layout)
         self.main_layout.add_widget(self.controls_layout)
         
-        # --- BACK BUTTON (Always visible) ---
+        # --- BACK BUTTON ---
         self.back_btn = Button(
             text="< MENU",
             font_name="assets/fonts/ARCADE_N.TTF",
-            font_size='10sp',
+            font_size=Scale.font(15),
             size_hint=(0.25, 0.05),
             pos_hint={'x': 0.0, 'top': 1.0},
             background_normal='',
@@ -6340,14 +7587,101 @@ class ZenBreathingScreen(Screen):
         self.back_btn.bind(on_release=self._go_back)
         self.main_layout.add_widget(self.back_btn)
 
+    def load_custom_timers(self):
+        """Loads user custom breathing values from local JSON save."""
+        self.custom_timers = [
+            web_load_game_data('custom_inhale', 4.0),
+            web_load_game_data('custom_hold_in', 4.0),
+            web_load_game_data('custom_exhale', 4.0),
+            web_load_game_data('custom_hold_out', 4.0)
+        ]
+
+    def save_custom_timers(self):
+        """Saves custom breathing values to JSON."""
+        web_save_game_data('custom_inhale', self.custom_timers[0])
+        web_save_game_data('custom_hold_in', self.custom_timers[1])
+        web_save_game_data('custom_exhale', self.custom_timers[2])
+        web_save_game_data('custom_hold_out', self.custom_timers[3])
+
+    def build_custom_panel_ui(self):
+        """Creates 4 quick adjusters: IN, HOLD, OUT, HOLD."""
+        labels = ["IN", "HOLD", "OUT", "HOLD"]
+        
+        for idx in range(4):
+            box = BoxLayout(orientation='vertical', spacing=dp(2))
+            
+            lbl = Label(
+                text=f"{labels[idx]}\n{self.custom_timers[idx]}s",
+                font_name="assets/fonts/ARCADE_N.TTF",
+                font_size='7sp',
+                color=(0, 0.75, 1, 1),
+                halign='center'
+            )
+            lbl.bind(size=lbl.setter('text_size'))
+            self.custom_labels.append(lbl)
+            
+            btn_row = BoxLayout(orientation='horizontal', spacing=dp(2))
+            
+            minus_btn = Button(
+                text="-", font_name="assets/fonts/ARCADE_N.TTF", font_size='12sp',
+                background_normal='', background_color=(0.8, 0.2, 0.2, 1)
+            )
+            minus_btn.bind(on_release=lambda x, i=idx: self.adjust_custom_val(i, -0.5))
+            
+            plus_btn = Button(
+                text="+", font_name="assets/fonts/ARCADE_N.TTF", font_size='12sp',
+                background_normal='', background_color=(0.1, 0.6, 0.3, 1)
+            )
+            plus_btn.bind(on_release=lambda x, i=idx: self.adjust_custom_val(i, 0.5))
+            
+            btn_row.add_widget(minus_btn)
+            btn_row.add_widget(plus_btn)
+            
+            box.add_widget(lbl)
+            box.add_widget(btn_row)
+            self.custom_panel.add_widget(box)
+
+    def adjust_custom_val(self, timer_idx, delta):
+        if self.is_active: return
+        min_val = 0.0 if timer_idx in [1, 3] else 1.0
+        new_val = round(max(min_val, min(20.0, self.custom_timers[timer_idx] + delta)), 1)
+        
+        self.custom_timers[timer_idx] = new_val
+        self.save_custom_timers()
+        
+        labels = ["IN", "HOLD", "OUT", "HOLD"]
+        self.custom_labels[timer_idx].text = f"{labels[timer_idx]}\n{new_val}s"
+        trigger_haptic_feedback(0.04)
+
+    def get_current_timings(self):
+        key = self.exercise_keys[self.selected_index]
+        if key == "CUSTOM":
+            return tuple(self.custom_timers)
+        return self.profiles[key]
+
+    def update_exercise_ui(self):
+        key = self.exercise_keys[self.selected_index]
+        self.exercise_label.text = key
+
+        if key == "CUSTOM" and not self.is_active:
+            self.custom_panel.opacity = 1
+            self.custom_panel.disabled = False
+        else:
+            self.custom_panel.opacity = 0
+            self.custom_panel.disabled = True
+
     # --- CANVAS BINDING HELPERS ---
     def _update_bg(self, instance, *args):
         self.bg_rect.pos = instance.pos
         self.bg_rect.size = instance.size
 
     def _update_diaphragm(self, instance, *args):
-        self.diaphragm.pos = (0, 0)
-        self.diaphragm.size = instance.size
+        diameter = min(instance.width, instance.height)
+        self.diaphragm.size = (diameter, diameter)
+        self.diaphragm.pos = (
+            (instance.width - diameter) / 2,
+            (instance.height - diameter) / 2
+        )
 
     def _go_back(self, instance):
         self.end_session()
@@ -6355,42 +7689,43 @@ class ZenBreathingScreen(Screen):
 
     # --- EXERCISE SELECTOR HELPERS ---
     def _prev_exercise(self, instance):
-        if self.is_active:
-            return  # Prevent changing exercise mid-session
+        if self.is_active: return
         self.selected_index = (self.selected_index - 1) % len(self.exercise_keys)
-        self.exercise_label.text = self.exercise_keys[self.selected_index]
+        self.update_exercise_ui()
 
     def _next_exercise(self, instance):
-        if self.is_active:
-            return  # Prevent changing exercise mid-session
+        if self.is_active: return
         self.selected_index = (self.selected_index + 1) % len(self.exercise_keys)
-        self.exercise_label.text = self.exercise_keys[self.selected_index]
+        self.update_exercise_ui()
 
-    # --- GAME LOGIC ---
-    def trigger_haptic_buzz(self):
-        app = App.get_running_app()
-        haptics_enabled = getattr(app, 'haptics_enabled', True)
-        if haptics_enabled and vibrator is not None:
-            try:
-                vibrator.vibrate(time=0.05)
-            except NotImplementedError:
-                pass
+    # --- GAME LOGIC & SESSION TOGGLE ---
+    def toggle_session(self, instance=None):
+        """Starts or interrupts a breathing session on demand."""
+        if not self.is_active:
+            self.start_session()
+        else:
+            self.end_session(interrupted=True)
 
-    def start_session(self, instance):
+    def start_session(self):
         self.is_active = True
         self.time_remaining = self.session_time
         self.timer_label.text = "3:00"
         
-        # Hide controls during play to clear screen space, but KEEP back_btn active
-        self.controls_layout.opacity = 0
-        self.controls_layout.disabled = True
+        # Update Action Button to RED "END SESSION"
+        self.play_btn.text = "END SESSION"
+        self.play_btn.background_color = (0.8, 0.2, 0.2, 1)
+
+        # Lock carousel & custom panels while active
+        self.selector_layout.disabled = True
+        self.custom_panel.opacity = 0
+        self.custom_panel.disabled = True
 
         self.timer_event = Clock.schedule_interval(self.update_timer, 1.0)
         self.next_breath_state(None, None)
 
     def update_timer(self, dt):
         if self.time_remaining <= 0:
-            self.end_session()
+            self.end_session(interrupted=False)
             return
             
         self.time_remaining -= 1
@@ -6401,13 +7736,12 @@ class ZenBreathingScreen(Screen):
         if not self.is_active:
             return
 
-        profile_key = self.exercise_keys[self.selected_index]
-        timings = self.profiles[profile_key]
+        timings = self.get_current_timings()
         
         if self.current_state == 0:
-            self._execute_state("INHALE", timings[0], target_size=dp(250))
+            self._execute_state("INHALE", timings[0], target_size=dp(230))
         elif self.current_state == 1:
-            self._execute_state("HOLD", timings[1], target_size=dp(250))
+            self._execute_state("HOLD", timings[1], target_size=dp(230))
         elif self.current_state == 2:
             self._execute_state("EXHALE", timings[2], target_size=dp(50))
         elif self.current_state == 3:
@@ -6420,7 +7754,7 @@ class ZenBreathingScreen(Screen):
             Clock.schedule_once(lambda dt: self.next_breath_state(None, None), 0)
             return
 
-        self.trigger_haptic_buzz()
+        trigger_haptic_feedback(0.05)
         self.instruction_label.text = instruction
         
         circle = self.dynamic_circle
@@ -6432,7 +7766,7 @@ class ZenBreathingScreen(Screen):
         self.current_anim.bind(on_complete=self.next_breath_state)
         self.current_anim.start(circle)
 
-    def end_session(self):
+    def end_session(self, interrupted=False):
         self.is_active = False
         if self.timer_event:
             self.timer_event.cancel()
@@ -6440,13 +7774,18 @@ class ZenBreathingScreen(Screen):
             self.current_anim.cancel(self.dynamic_circle)
 
         self.current_state = 0
-        self.instruction_label.text = "SESSION COMPLETE"
-        self.trigger_haptic_buzz()
+        self.instruction_label.text = "SESSION INTERRUPTED" if interrupted else "SESSION COMPLETE"
+        trigger_haptic_feedback(0.05)
         
-        # Restore UI
-        self.controls_layout.opacity = 1
-        self.controls_layout.disabled = False
+        # Reset Action Button back to GREEN "START SESSION"
+        self.play_btn.text = "START SESSION"
+        self.play_btn.background_color = (0.1, 0.6, 0.3, 1)
+
+        # Unlock carousel controls & custom adjusters
+        self.selector_layout.disabled = False
+        self.update_exercise_ui()
         
+        # Reset expanding circle back to idle baseline size
         circle = self.dynamic_circle
         center_x = self.breathing_area.width / 2
         center_y = self.breathing_area.height / 2
@@ -6454,7 +7793,7 @@ class ZenBreathingScreen(Screen):
         Animation(size=(idle_size, idle_size), pos=(center_x - idle_size / 2, center_y - idle_size / 2), duration=0.5).start(circle)
 
     def on_leave(self):
-        self.end_session()
+        self.end_session(interrupted=True)
         
 class ScreenshotScreen(Screen):
     def __init__(self, **kwargs):
@@ -6483,7 +7822,7 @@ class ScreenshotScreen(Screen):
         self.back_btn = Button(
             text="< MENU",
             font_name="assets/fonts/ARCADE_N.TTF",
-            font_size='10sp',
+            font_size=Scale.font(15),
             size_hint=(0.25, 0.05),
             pos_hint={'x': 0.0, 'top': 1.0},
             background_normal='',
@@ -6852,7 +8191,7 @@ class LineFillScreen(Screen):
         self.back_btn = Button(
             text="< MENU",
             font_name="assets/fonts/ARCADE_N.TTF",
-            font_size='10sp',
+            font_size=Scale.font(15),
             size_hint=(0.25, 0.05),
             pos_hint={'x': 0.0, 'top': 1.0},
             background_normal='',
@@ -6865,7 +8204,7 @@ class LineFillScreen(Screen):
         self.title_label = Label(
             text="SHAPE FILL",
             font_name="assets/fonts/ARCADE_N.TTF",
-            font_size='16sp',
+            font_size=Scale.font(30),
             color=(0.47, 0.87, 0.47, 1),
             pos_hint={'center_x': 0.5, 'top': 0.93},
             size_hint=(1, 0.08)
@@ -7243,7 +8582,7 @@ class MathInvadersScreen(Screen):
         # --- BACK BUTTON ---
         self.back_btn = Button(
             text="< MENU",
-            font_size='10sp',
+            font_size=Scale.font(15),
             font_name='assets/fonts/ARCADE_N.TTF',
             color=(1, 1, 1, 1),
             size_hint=(0.25, 0.05),
@@ -7298,7 +8637,7 @@ class MathInvadersScreen(Screen):
 
         self.start_btn = Button(
             text="START GAME",
-            font_size='18sp',
+            font_size=Scale.font(25),
             font_name='assets/fonts/ARCADE_N.TTF',
             color=(0.04, 0.06, 0.17, 1),
             size_hint_x=0.8,
@@ -7706,7 +9045,7 @@ class SequenceSwitchScreen(Screen):
         # --- BACK BUTTON ---
         self.back_btn = Button(
             text="< MENU",
-            font_size='10sp',
+            font_size=Scale.font(15),
             font_name='assets/fonts/ARCADE_N.TTF',
             color=(1, 1, 1, 1),
             size_hint=(0.25, 0.05),
@@ -7757,7 +9096,7 @@ class SequenceSwitchScreen(Screen):
 
         self.action_btn = Button(
             text="START GAME",
-            font_size='16sp',
+            font_size=Scale.font(25),
             font_name='assets/fonts/ARCADE_N.TTF',
             color=(0.04, 0.06, 0.17, 1),
             size_hint_x=0.8,
@@ -8249,7 +9588,7 @@ class TileTurnpikeScreen(Screen):
         # Back Button
         self.back_btn = Button(
             text="< MENU",
-            font_size='10sp',
+            font_size=Scale.font(15),
             font_name='assets/fonts/ARCADE_N.TTF',
             color=(1, 1, 1, 1),
             size_hint=(0.25, 0.05),
@@ -8293,7 +9632,7 @@ class TileTurnpikeScreen(Screen):
 
         self.action_btn = Button(
             text="START GAME",
-            font_size='14sp',
+            font_size=Scale.font(25),
             font_name='assets/fonts/ARCADE_N.TTF',
             color=(0.04, 0.06, 0.17, 1),
             size_hint_x=0.8,
@@ -8695,8 +10034,8 @@ NEON_COLORS = [
 
 class NeonPythonScreen(Screen):
     # Reasonable Portrait Mobile Grid Arena Size
-    GRID_COLS = 10
-    GRID_ROWS = 15
+    GRID_COLS = 20
+    GRID_ROWS = 20
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
@@ -8770,7 +10109,7 @@ class NeonPythonScreen(Screen):
         # Back Button
         self.back_btn = Button(
             text="< MENU",
-            font_size='10sp',
+            font_size=Scale.font(15),
             font_name='assets/fonts/ARCADE_N.TTF',
             color=(1, 1, 1, 1),
             size_hint=(0.25, 0.05),
@@ -8799,7 +10138,7 @@ class NeonPythonScreen(Screen):
 
         self.start_btn = Button(
             text="START GAME",
-            font_size='14sp',
+            font_size=Scale.font(25),
             font_name='assets/fonts/ARCADE_N.TTF',
             color=(0.04, 0.06, 0.17, 1),
             size_hint_x=0.8,
@@ -9043,6 +10382,2000 @@ class NeonPythonScreen(Screen):
                 json.dump(data, f)
         except Exception:
             pass
+        
+class LockPickScreen(Screen):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.game_active = False
+        self.is_frozen = False
+        self.freeze_timer = 0.0
+        self.score = 0
+        self.high_score = 0
+        self.time_remaining = 60.0
+        self.level = 1
+
+        # Circle & Orbit Mechanics (Tracked in Radians)
+        self.angle_rad = 0.0
+        self.orbit_speed_rad = math.radians(130.0)  # Radians per second
+        self.orbit_direction = 1
+        self.targets = []
+        self.target_drift_speed_rad = 0.0
+
+        self.game_event = None
+
+        self.layout = RelativeLayout()
+        self.add_widget(self.layout)
+
+        # 1. Deep Cosmic Background Layer (#0A0F2C)
+        with self.canvas.before:
+            Color(0.04, 0.06, 0.17, 1)
+            self.bg_rect = Rectangle(pos=self.pos, size=self.size)
+        self.bind(pos=self.update_bg, size=self.update_bg)
+
+        self.load_high_score()
+
+        # 2. Standardized Retro HUD Elements
+        self.title_label = Label(
+            text="LOCK PICK", font_size=Scale.font(30), font_name='assets/fonts/ARCADE_N.TTF',
+            color=(0, 0.75, 1, 1), pos_hint={'center_x': 0.5, 'center_y': 0.92}
+        )
+        self.layout.add_widget(self.title_label)
+
+        self.timer_label = Label(
+            text="TIME: 60s", font_size='12sp', font_name='assets/fonts/ARCADE_N.TTF',
+            color=(0, 0.75, 1, 1), pos_hint={'center_x': 0.5, 'center_y': 0.80}
+        )
+        self.layout.add_widget(self.timer_label)
+
+        self.score_label = Label(
+            text="SCORE: 0", font_size='12sp', font_name='assets/fonts/ARCADE_N.TTF',
+            color=(0, 0.75, 1, 1), pos_hint={'center_x': 0.3, 'center_y': 0.86}
+        )
+        self.layout.add_widget(self.score_label)
+
+        self.hi_score_label = Label(
+            text=f"BEST: {self.high_score}", font_size='12sp', font_name='assets/fonts/ARCADE_N.TTF',
+            color=(0, 0.75, 1, 1), pos_hint={'center_x': 0.7, 'center_y': 0.86}
+        )
+        self.layout.add_widget(self.hi_score_label)
+
+        self.status_label = Label(
+            text="", font_size='16sp', font_name='assets/fonts/ARCADE_N.TTF',
+            color=(0.9, 0.2, 0.2, 1), pos_hint={'center_x': 0.5, 'center_y': 0.5}
+        )
+        self.layout.add_widget(self.status_label)
+
+        # Standard Top-Left Back Button
+        self.back_btn = Button(
+            text="< MENU", font_size=Scale.font(15), font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
+            size_hint=(0.25, 0.05), pos_hint={'x': 0.0, 'top': 1.0},
+            background_normal='', background_color=(0.8, 0.25, 0.25, 1)
+        )
+        self.back_btn.bind(on_release=self.go_back_to_menu)
+        self.layout.add_widget(self.back_btn)
+
+        # 3. Standardized Control Row (Play & Help)
+        self.play_help_row = BoxLayout(
+            orientation='horizontal', spacing=dp(10),
+            size_hint=(0.9, 0.1), pos_hint={'center_x': 0.5, 'center_y': 0.2}
+        )
+        self.layout.add_widget(self.play_help_row)
+
+        self.start_btn = Button(
+            text="START GAME", font_size=Scale.font(25), font_name='assets/fonts/ARCADE_N.TTF',
+            color=(0.04, 0.06, 0.17, 1), size_hint_x=0.8,
+            background_normal='', background_color=(0, 0.75, 1, 1)
+        )
+        self.start_btn.bind(on_release=self.start_game)
+        self.play_help_row.add_widget(self.start_btn)
+
+        self.help_btn = Button(
+            text="?", font_size='16sp', font_name='assets/fonts/ARCADE_N.TTF',
+            background_normal='', background_color=(0, 0.5, 0.8, 1), color=(1, 1, 1, 1),
+            size_hint_x=0.2
+        )
+        self.help_btn.bind(on_release=self.show_instructions_overlay)
+        self.play_help_row.add_widget(self.help_btn)
+
+    # --- INSTRUCTIONS OVERLAY ---
+    def show_instructions_overlay(self, instance):
+        self.play_help_row.disabled = True
+        self.back_btn.disabled = True
+        rules = [
+            "A triangle orbits around the lock cylinder",
+            "Tap anywhere when the triangle touches a DARK RED section",
+            "Turn all sections green to break the lock combination",
+            "Level 3+: Correct taps invert orbit direction!",
+            "Missed taps jam your pick for a 1-second penalty freeze!"
+        ]
+        overlay = InstructionOverlay(
+            game_name="Lock Pick",
+            rules_list=rules,
+            close_callback=self.on_instructions_closed
+        )
+        self.layout.add_widget(overlay)
+
+    def on_instructions_closed(self):
+        self.play_help_row.disabled = False
+        self.back_btn.disabled = False
+
+    # --- LIFECYCLE HANDLERS ---
+    def on_pre_enter(self, *args):
+        self.stop_game_engine()
+        self.title_label.text = "LOCK PICK"
+        self.title_label.color = (0, 0.75, 1, 1)
+        self.timer_label.text = "TIME: 60s"
+        self.score_label.text = "SCORE: 0"
+        self.status_label.text = ""
+        self.load_high_score()
+        self.hi_score_label.text = f"BEST: {self.high_score}"
+        if self.play_help_row not in self.layout.children:
+            self.layout.add_widget(self.play_help_row)
+        self.play_help_row.disabled = False
+
+    def on_leave(self, *args):
+        self.stop_game_engine()
+        for child in list(self.layout.children):
+            if isinstance(child, InstructionOverlay):
+                self.layout.remove_widget(child)
+
+    def update_bg(self, *args):
+        self.bg_rect.pos = self.pos
+        self.bg_rect.size = self.size
+        self.draw_lock_canvas()
+
+    def go_back_to_menu(self, instance):
+        self.stop_game_engine()
+        self.manager.current = 'menu'
+
+    # --- SAVE / LOAD DATA ---
+    def load_high_score(self):
+        try:
+            if os.path.exists('save_data.json'):
+                with open('save_data.json', 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    self.high_score = data.get('lock_pick_high', 0)
+        except Exception:
+            self.high_score = 0
+
+    def save_high_score(self):
+        try:
+            data = {}
+            if os.path.exists('save_data.json'):
+                with open('save_data.json', 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+            data['lock_pick_high'] = self.high_score
+            with open('save_data.json', 'w', encoding='utf-8') as f:
+                json.dump(data, f)
+        except Exception:
+            pass
+
+    # --- GAME GENERATION & ENGINE ---
+    def generate_lock_combination(self):
+        self.targets = []
+        num_targets = min(2 + (self.level // 2), 6)
+        base_sweep_deg = max(22.0 - (self.level * 0.8), 8.0)
+        
+        self.orbit_speed_rad = math.radians(130.0 + (self.level * 15.0))
+
+        if self.level >= 5:
+            self.target_drift_speed_rad = math.radians((random.choice([-1, 1])) * (10.0 + self.level * 2))
+        else:
+            self.target_drift_speed_rad = 0.0
+
+        sector_deg = 360.0 / num_targets
+        for i in range(num_targets):
+            variation = random.uniform(0.85, 1.15)
+            sweep_deg = max(base_sweep_deg * variation, 6.0)
+            min_deg = i * sector_deg
+            max_deg = (i + 1) * sector_deg - sweep_deg
+            start_deg = random.uniform(min_deg, max_deg)
+
+            self.targets.append({
+                'start_rad': math.radians(start_deg % 360.0),
+                'sweep_rad': math.radians(sweep_deg),
+                'unlocked': False
+            })
+
+    def start_game(self, instance=None):
+        if self.play_help_row in self.layout.children:
+            self.layout.remove_widget(self.play_help_row)
+
+        self.score = 0
+        self.level = 1
+        self.time_remaining = 60.0
+        self.game_active = True
+        self.is_frozen = False
+        self.angle_rad = 0.0
+        self.orbit_direction = 1
+        
+        self.score_label.text = "SCORE: 0"
+        self.timer_label.text = "TIME: 60s"
+        self.status_label.text = ""
+
+        self.generate_lock_combination()
+
+        if self.game_event:
+            Clock.unschedule(self.game_event)
+        self.game_event = Clock.schedule_interval(self.game_loop_tick, 1.0 / 60.0)
+
+    def on_touch_down(self, touch):
+        if self.back_btn.collide_point(*touch.pos):
+            return super().on_touch_down(touch)
+
+        if not self.game_active or self.is_frozen:
+            return super().on_touch_down(touch)
+
+        self.evaluate_tap()
+        return True
+
+    def evaluate_tap(self):
+        curr_rad = self.angle_rad % (2 * math.pi)
+        hit = False
+        
+        # Fair hit tolerance padding (~5 degrees)
+        tolerance_rad = math.radians(5.0)
+
+        for target in self.targets:
+            if target['unlocked']:
+                continue
+
+            start_rad = target['start_rad'] % (2 * math.pi)
+            sweep_rad = target['sweep_rad']
+
+            # Distance from start of arc going forward counter-clockwise
+            forward_dist = (curr_rad - start_rad) % (2 * math.pi)
+            # Distance from start of arc going backward
+            backward_dist = (start_rad - curr_rad) % (2 * math.pi)
+
+            # Hit registers if triangle tip is inside arc OR within tolerance of either edge
+            if forward_dist <= (sweep_rad + tolerance_rad) or backward_dist <= tolerance_rad:
+                hit = True
+                target['unlocked'] = True
+                break
+
+        if hit:
+            trigger_haptic_feedback(0.04)
+            self.score += 1
+            self.score_label.text = f"SCORE: {self.score}"
+            
+            # Reversal difficulty modifier kicks in at Level 3+
+            if self.level >= 3:
+                self.orbit_direction *= -1
+
+            if all(t['unlocked'] for t in self.targets):
+                self.level += 1
+                self.generate_lock_combination()
+        else:
+            trigger_haptic_feedback(0.12)
+            self.is_frozen = True
+            self.freeze_timer = 1.0
+            self.status_label.text = "JAMMED!"
+
+    def game_loop_tick(self, dt):
+        if not self.game_active:
+            return
+
+        self.time_remaining -= dt
+        if self.time_remaining <= 0:
+            self.time_remaining = 0
+            self.stop_game_engine()
+            return
+
+        self.timer_label.text = f"TIME: {int(self.time_remaining)}s"
+
+        if self.is_frozen:
+            self.freeze_timer -= dt
+            if self.freeze_timer <= 0:
+                self.is_frozen = False
+                self.status_label.text = ""
+            self.draw_lock_canvas()
+            return
+
+        self.angle_rad = (self.angle_rad + (self.orbit_speed_rad * self.orbit_direction) * dt) % (2 * math.pi)
+
+        if self.target_drift_speed_rad != 0:
+            for t in self.targets:
+                t['start_rad'] = (t['start_rad'] + self.target_drift_speed_rad * dt) % (2 * math.pi)
+
+        self.draw_lock_canvas()
+
+    def draw_lock_canvas(self):
+        self.canvas.remove_group('lockpick_shapes')
+        if not self.game_active:
+            return
+
+        cx = Window.width / 2.0
+        cy = Window.height * 0.52
+        r = min(Window.width, Window.height) * 0.28
+        thickness = dp(10)
+
+        with self.canvas:
+            # 1. Base Lock Ring
+            Color(1, 1, 1, 0.3 if self.is_frozen else 1.0, group='lockpick_shapes')
+            Line(circle=(cx, cy, r), width=dp(3), group='lockpick_shapes')
+
+            # 2. Target Segments (Drawn explicitly using trig points for 100% precision match)
+            for target in self.targets:
+                if target['unlocked']:
+                    Color(0.1, 0.9, 0.3, 1, group='lockpick_shapes')  # Green
+                else:
+                    Color(0.8, 0.15, 0.15, 1, group='lockpick_shapes')  # Dark Red
+
+                arc_points = []
+                steps = 24
+                for i in range(steps + 1):
+                    a = target['start_rad'] + (target['sweep_rad'] * (i / float(steps)))
+                    arc_points.extend([cx + r * math.cos(a), cy + r * math.sin(a)])
+
+                Line(points=arc_points, width=thickness, cap='none', group='lockpick_shapes')
+
+            # 3. Orbiting Pointer (Equilateral Triangle, tip touching outer ring edge)
+            rad = self.angle_rad
+            side = dp(12)
+            height = (math.sqrt(3) / 2.0) * side
+
+            tip_dist = r + (thickness / 2.0) + dp(1)
+            base_dist = tip_dist + height
+            spread_angle = (side / 2.0) / base_dist
+
+            p1 = (cx + tip_dist * math.cos(rad), cy + tip_dist * math.sin(rad))
+            p2 = (cx + base_dist * math.cos(rad - spread_angle), cy + base_dist * math.sin(rad - spread_angle))
+            p3 = (cx + base_dist * math.cos(rad + spread_angle), cy + base_dist * math.sin(rad + spread_angle))
+
+            Color(1, 1, 1, 1, group='lockpick_shapes')
+            Mesh(
+                vertices=[p1[0], p1[1], 0, 0, p2[0], p2[1], 0, 0, p3[0], p3[1], 0, 0],
+                indices=[0, 1, 2],
+                mode='triangles',
+                group='lockpick_shapes'
+            )
+
+    def stop_game_engine(self):
+        self.game_active = False
+        if self.game_event:
+            Clock.unschedule(self.game_event)
+            self.game_event = None
+
+        self.canvas.remove_group('lockpick_shapes')
+        self.status_label.text = "TIME UP!"
+
+        if self.score > self.high_score:
+            self.high_score = self.score
+            self.save_high_score()
+            self.title_label.text = "NEW HIGH SCORE!"
+            self.title_label.color = (1, 0.84, 0, 1)
+
+        self.hi_score_label.text = f"BEST: {self.high_score}"
+        self.start_btn.text = "PLAY AGAIN"
+
+        if self.play_help_row not in self.layout.children:
+            self.play_help_row.disabled = False
+            self.layout.add_widget(self.play_help_row)
+            
+class RapidReaderScreen(Screen):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.game_active = False
+        self.round_number = 1
+        self.score = 0
+        self.high_score = 0
+        
+        # Word Banks (Expanded)
+        self.word_banks = {
+            'ADJECTIVE_1': ['energetic', 'quiet', 'nervous', 'glowing', 'radioactive', 'invisible', 'furious', 'sleepy', 'gigantic', 'hungry'],
+            'SUBJECT_1': ['boy', 'athlete', 'teacher', 'cowboy', 'astronaut', 'penguin', 'detective', 'chef', 'pirate', 'robot'],
+            'VERB_1_PAST': ['kicked', 'dropped', 'found', 'petted', 'hypnotized', 'toasted', 'launched', 'spotted', 'painted', 'juggled'],
+            'OBJECT_1': ['soccer ball', 'leather shoe', 'wallet', 'Ferrari', 'bowling pin', 'saxophone', 'watermelon', 'laptop', 'treasure map', 'goldfish'],
+            'LOCATION_1': ['park', 'stadium', 'hallway', 'hair salon', 'submarine', 'graveyard', 'bakery', 'library', 'airport', 'castle'],
+            'ADJECTIVE_2': ['strict', 'clumsy', 'tall', 'tiny', 'robotic', 'dramatic', 'grumpy', 'wild', 'mysterious', 'fancy'],
+            'SUBJECT_2': ['referee', 'landlord', 'police officer', 'wizard', 'mime', 'raccoon', 'ninja', 'alien', 'captain', 'barber'],
+            'ADVERB_1': ['aggressively', 'accidentally', 'quietly', 'triumphantly', 'suspiciously', 'wildly', 'politely', 'eagerly', 'boldly', 'calmly'],
+            'VERB_2_PAST': ['poked', 'nudged', 'tapped', 'slapped', 'serenaded', 'tickled', 'blasted', 'chased', 'greeted', 'scared'],
+            'OBJECT_2': ['whistle', 'clipboard', 'flashlight', 'baguette', 'rubber chicken', 'spatula', 'umbrella', 'laser pointer', 'broom', 'feather'],
+            'VERB_3_BASE': ['launch', 'roll', 'slide', 'fling', 'teleport', 'yeet', 'bounce', 'throw', 'drag', 'spin'],
+            'LOCATION_2': ['dugout', 'concession stand', 'office', 'dumpster', 'spaceship', 'VIP lounge', 'greenhouse', 'treehouse', 'vault', 'bunker'],
+            'ADJECTIVE_3': ['shiny', 'forgotten', 'heavy', 'cursed', 'giant', 'marshmallow', 'ancient', 'golden', 'frozen', 'magical'],
+            'OBJECT_3': ['trophy', 'key', 'gold coin', 'disco ball', 'slice of pizza', 'lawnmower', 'crown', 'crystal ball', 'magic wand', 'diamond'],
+            'VERB_4_PAST': ['cheered', 'sighed', 'bowed', 'danced', 'gasped', 'backflipped', 'screamed', 'laughed', 'clapped', 'fainted'],
+            'ADVERB_2': ['loudly', 'relievedly', 'politely', 'hysterically', 'awkwardly', 'violently', 'joyfully', 'dramatically', 'peacefully', 'proudly'],
+            'VERB_5_BASE': ['celebrate', 'rest', 'wait', 'hibernate', 'meditate', 'juggle', 'party', 'sleep', 'hide', 'feast'],
+            'TIME_FRAME': ['midnight', 'sunset', 'tomorrow', 'Tuesday', 'the apocalypse', 'next century', 'breakfast', 'next year', 'dawn', 'noon']
+        }
+
+        # Game State Handles
+        self.current_story_words = []
+        self.current_word_idx = 0
+        self.story_variables = {}
+        self.questions_queue = []
+        self.current_question = None
+        self.timer_event = None
+        self.countdown_ticks = 3
+        
+        self.layout = RelativeLayout()
+        self.add_widget(self.layout)
+
+        # 1. Background Layer (#0A0F2C)
+        with self.canvas.before:
+            Color(0.04, 0.06, 0.17, 1)
+            self.bg_rect = Rectangle(pos=self.pos, size=self.size)
+        self.bind(pos=self.update_bg, size=self.update_bg)
+
+        self.load_high_score()
+
+        # 2. Retro HUD
+        self.title_label = Label(
+            text="RAPID READER", font_size=Scale.font(30), font_name='assets/fonts/ARCADE_N.TTF',
+            color=(0, 0.75, 1, 1), pos_hint={'center_x': 0.5, 'center_y': 0.92}
+        )
+        self.layout.add_widget(self.title_label)
+
+        self.score_label = Label(
+            text="SCORE: 0", font_size='11sp', font_name='assets/fonts/ARCADE_N.TTF',
+            color=(0, 0.75, 1, 1), pos_hint={'center_x': 0.3, 'center_y': 0.85}
+        )
+        self.layout.add_widget(self.score_label)
+
+        self.hi_score_label = Label(
+            text=f"BEST: {self.high_score}", font_size='11sp', font_name='assets/fonts/ARCADE_N.TTF',
+            color=(0, 0.75, 1, 1), pos_hint={'center_x': 0.7, 'center_y': 0.85}
+        )
+        self.layout.add_widget(self.hi_score_label)
+
+        self.wpm_label = Label(
+            text="SPEED: 200 WPM", font_size='10sp', font_name='assets/fonts/ARCADE_N.TTF',
+            color=(1, 0.84, 0, 1), pos_hint={'center_x': 0.5, 'center_y': 0.78}
+        )
+        self.layout.add_widget(self.wpm_label)
+
+        # 3. RSVP Reading Display Box (High Contrast Yellow Box + Black Bold Text)
+        self.rsvp_container = RelativeLayout(
+            size_hint=(0.85, 0.18), pos_hint={'center_x': 0.5, 'center_y': 0.55}
+        )
+        with self.rsvp_container.canvas.before:
+            Color(1, 0.85, 0, 1)  # Vivid Arcade Yellow
+            self.rsvp_bg = Rectangle(pos=(0, 0), size=self.rsvp_container.size)
+            Color(0, 0, 0, 1)     # Solid Black Border
+            self.rsvp_border = Line(rectangle=(0, 0, Window.width * 0.85, Window.height * 0.18), width=dp(3))
+            
+        self.rsvp_container.bind(size=self.sync_rsvp_box, pos=self.sync_rsvp_box)
+        self.layout.add_widget(self.rsvp_container)
+
+        self.rsvp_label = Label(
+            text="READY?", font_size=Scale.font(20), font_name='assets/fonts/ARCADE_N.TTF',
+            color=(0, 0, 0, 1), pos_hint={'center_x': 0.5, 'center_y': 0.5},
+            halign='center', valign='middle'
+        )
+        self.rsvp_container.add_widget(self.rsvp_label)
+
+        # 4. Multiple Choice Questions Container (Initially Hidden)
+        self.mcq_container = RelativeLayout(
+            size_hint=(0.9, 0.45), pos_hint={'center_x': 0.5, 'center_y': 0.42},
+            opacity=0, disabled=True
+        )
+        self.layout.add_widget(self.mcq_container)
+
+        self.q_prompt_label = Label(
+            text="Question?", font_size='11sp', font_name='assets/fonts/ARCADE_N.TTF',
+            color=(1, 1, 1, 1), pos_hint={'center_x': 0.5, 'top': 1.0},
+            size_hint=(1, 0.22), halign='center', valign='middle'
+        )
+        self.q_prompt_label.bind(size=self.q_prompt_label.setter('text_size'))
+        self.mcq_container.add_widget(self.q_prompt_label)
+
+        self.options_grid = GridLayout(
+            cols=1, rows=4, spacing=dp(8), size_hint=(1, 0.75), pos_hint={'center_x': 0.5, 'y': 0.0}
+        )
+        self.option_buttons = []
+        for i in range(4):
+            btn = Button(
+                text="", font_size='10sp', font_name='assets/fonts/ARCADE_N.TTF',
+                color=(0.04, 0.06, 0.17, 1), background_normal='', background_color=(0, 0.75, 1, 1)
+            )
+            btn.option_idx = i
+            btn.bind(on_release=self.handle_answer_selection)
+            self.options_grid.add_widget(btn)
+            self.option_buttons.append(btn)
+        self.mcq_container.add_widget(self.options_grid)
+
+        # 5. Back Button
+        self.back_btn = Button(
+            text="< MENU", font_size=Scale.font(15), font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
+            size_hint=(0.25, 0.05), pos_hint={'x': 0.0, 'top': 1.0},
+            background_normal='', background_color=(0.8, 0.25, 0.25, 1)
+        )
+        self.back_btn.bind(on_release=self.go_back_to_menu)
+        self.layout.add_widget(self.back_btn)
+
+        # 6. Action Control Row
+        self.play_help_row = BoxLayout(
+            orientation='horizontal', spacing=dp(10),
+            size_hint=(0.9, 0.1), pos_hint={'center_x': 0.5, 'center_y': 0.12}
+        )
+        self.layout.add_widget(self.play_help_row)
+
+        self.start_btn = Button(
+            text="START GAME", font_size=Scale.font(20), font_name='assets/fonts/ARCADE_N.TTF',
+            color=(0.04, 0.06, 0.17, 1), size_hint_x=0.8,
+            background_normal='', background_color=(0, 0.75, 1, 1)
+        )
+        self.start_btn.bind(on_release=self.start_game_sequence)
+        self.play_help_row.add_widget(self.start_btn)
+
+        self.help_btn = Button(
+            text="?", font_size='16sp', font_name='assets/fonts/ARCADE_N.TTF',
+            background_normal='', background_color=(0, 0.5, 0.8, 1), color=(1, 1, 1, 1),
+            size_hint_x=0.2
+        )
+        self.help_btn.bind(on_release=self.show_instructions_overlay)
+        self.play_help_row.add_widget(self.help_btn)
+
+    def sync_rsvp_box(self, instance, value):
+        self.rsvp_bg.pos = (0, 0)
+        self.rsvp_bg.size = instance.size
+        self.rsvp_border.rectangle = (0, 0, instance.width, instance.height)
+
+    def update_bg(self, *args):
+        self.bg_rect.pos = self.pos
+        self.bg_rect.size = self.size
+
+    def show_instructions_overlay(self, instance):
+        self.play_help_row.disabled = True
+        self.back_btn.disabled = True
+        rules = [
+            "Focus your eyes inside the yellow reading box",
+            "Words will flash rapidly one-by-one (RSVP)",
+            "Maintain focus to absorb the short randomized story",
+            "Answer the multiple-choice questions correctly to advance",
+            "Reading speed increases with each round completed!"
+        ]
+        overlay = InstructionOverlay("Rapid Reader", rules, self.on_instructions_closed)
+        self.layout.add_widget(overlay)
+
+    def on_instructions_closed(self):
+        self.play_help_row.disabled = False
+        self.back_btn.disabled = False
+
+    def on_pre_enter(self, *args):
+        self.stop_game_engine()
+        self.title_label.text = "RAPID READER"
+        self.score = 0
+        self.round_number = 1
+        self.score_label.text = "SCORE: 0"
+        self.load_high_score()
+        self.hi_score_label.text = f"BEST: {self.high_score}"
+        self.wpm_label.text = "SPEED: 200 WPM"
+        self.rsvp_label.text = "READY?"
+        self.rsvp_container.opacity = 1
+        self.mcq_container.opacity = 0
+        self.mcq_container.disabled = True
+        if self.play_help_row not in self.layout.children:
+            self.layout.add_widget(self.play_help_row)
+        self.start_btn.text = "START GAME"
+
+    def on_leave(self, *args):
+        self.stop_game_engine()
+        for child in list(self.layout.children):
+            if isinstance(child, InstructionOverlay):
+                self.layout.remove_widget(child)
+
+    def go_back_to_menu(self, instance):
+        self.stop_game_engine()
+        self.manager.current = 'menu'
+
+    def load_high_score(self):
+        try:
+            if os.path.exists('save_data.json'):
+                with open('save_data.json', 'r', encoding='utf-8') as f:
+                    self.high_score = json.load(f).get('rapid_reader_high', 0)
+        except Exception:
+            self.high_score = 0
+
+    def save_high_score(self):
+        try:
+            data = {}
+            if os.path.exists('save_data.json'):
+                with open('save_data.json', 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+            data['rapid_reader_high'] = self.high_score
+            with open('save_data.json', 'w', encoding='utf-8') as f:
+                json.dump(data, f)
+        except Exception:
+            pass
+
+    # --- STORY GENERATOR ---
+    def generate_random_story(self):
+        self.story_variables = {}
+        for key, bank in self.word_banks.items():
+            self.story_variables[key] = random.choice(bank)
+
+        # Grammar article helpers
+        a_adj1 = "an" if self.story_variables['ADJECTIVE_1'][0].lower() in "aeiou" else "a"
+        a_adj2 = "an" if self.story_variables['ADJECTIVE_2'][0].lower() in "aeiou" else "a"
+        a_adj3 = "an" if self.story_variables['ADJECTIVE_3'][0].lower() in "aeiou" else "a"
+
+        s1 = f"Yesterday, {a_adj1} {self.story_variables['ADJECTIVE_1']} {self.story_variables['SUBJECT_1']} {self.story_variables['VERB_1_PAST']} a {self.story_variables['OBJECT_1']} near the {self.story_variables['LOCATION_1']}."
+        s2 = f"Suddenly, {a_adj2} {self.story_variables['ADJECTIVE_2']} {self.story_variables['SUBJECT_2']} {self.story_variables['ADVERB_1']} {self.story_variables['VERB_2_PAST']} them with a {self.story_variables['OBJECT_2']}."
+        s3 = f"This caused the {self.story_variables['SUBJECT_1']} to {self.story_variables['VERB_3_BASE']} the {self.story_variables['OBJECT_1']} directly toward the {self.story_variables['LOCATION_2']}."
+        s4 = f"Upon reaching the {self.story_variables['LOCATION_2']}, everyone discovered {a_adj3} {self.story_variables['ADJECTIVE_3']} {self.story_variables['OBJECT_3']} hidden inside."
+        s5 = f"In the end, the {self.story_variables['SUBJECT_2']} {self.story_variables['VERB_4_PAST']} {self.story_variables['ADVERB_2']} and decided to {self.story_variables['VERB_5_BASE']} until {self.story_variables['TIME_FRAME']}."
+
+        full_text = f"{s1} {s2} {s3} {s4} {s5}"
+        self.current_story_words = full_text.split()
+
+    # --- QUESTION GENERATOR ---
+    def generate_questions(self):
+        possible_questions = [
+            {
+                'prompt': f"What did the {self.story_variables['SUBJECT_1']} do first?",
+                'correct': self.story_variables['VERB_1_PAST'],
+                'bank': 'VERB_1_PAST'
+            },
+            {
+                'prompt': f"Where was the {self.story_variables['OBJECT_1']} located at first?",
+                'correct': self.story_variables['LOCATION_1'],
+                'bank': 'LOCATION_1'
+            },
+            {
+                'prompt': f"What did the {self.story_variables['SUBJECT_2']} use as a tool?",
+                'correct': self.story_variables['OBJECT_2'],
+                'bank': 'OBJECT_2'
+            },
+            {
+                'prompt': f"Where was the {self.story_variables['OBJECT_1']} sent toward?",
+                'correct': self.story_variables['LOCATION_2'],
+                'bank': 'LOCATION_2'
+            },
+            {
+                'prompt': f"What hidden item was discovered inside the {self.story_variables['LOCATION_2']}?",
+                'correct': self.story_variables['OBJECT_3'],
+                'bank': 'OBJECT_3'
+            },
+            {
+                'prompt': f"How long did the {self.story_variables['SUBJECT_2']} decide to {self.story_variables['VERB_5_BASE']}?",
+                'correct': self.story_variables['TIME_FRAME'],
+                'bank': 'TIME_FRAME'
+            }
+        ]
+
+        # Select 3-5 questions at random for this round
+        q_count = min(3 + (self.round_number // 2), 5)
+        selected_templates = random.sample(possible_questions, q_count)
+
+        self.questions_queue = []
+        for q_data in selected_templates:
+            correct_ans = q_data['correct']
+            bank_key = q_data['bank']
+            
+            # Select 3 distractor choices from the same bank
+            distractors = [w for w in self.word_banks[bank_key] if w != correct_ans]
+            chosen_distractors = random.sample(distractors, 3)
+            
+            options = chosen_distractors + [correct_ans]
+            random.shuffle(options)
+
+            self.questions_queue.append({
+                'prompt': q_data['prompt'],
+                'options': options,
+                'correct_idx': options.index(correct_ans)
+            })
+
+    # --- GAME FLOW & ENGINE ---
+    def start_game_sequence(self, instance=None):
+        if self.play_help_row in self.layout.children:
+            self.layout.remove_widget(self.play_help_row)
+
+        self.game_active = True
+        self.mcq_container.opacity = 0
+        self.mcq_container.disabled = True
+        self.rsvp_container.opacity = 1
+
+        self.generate_random_story()
+        self.generate_questions()
+
+        self.countdown_ticks = 3
+        self.rsvp_label.text = str(self.countdown_ticks)
+        
+        if self.timer_event:
+            Clock.unschedule(self.timer_event)
+        self.timer_event = Clock.schedule_interval(self.handle_countdown_tick, 1.0)
+
+    def handle_countdown_tick(self, dt):
+        self.countdown_ticks -= 1
+        if self.countdown_ticks > 0:
+            self.rsvp_label.text = str(self.countdown_ticks)
+        else:
+            Clock.unschedule(self.timer_event)
+            self.begin_rsvp_reading()
+
+    def begin_rsvp_reading(self):
+        self.current_word_idx = 0
+        # WPM scales up with round progress (200 WPM, 230 WPM, 260 WPM, etc.)
+        wpm = 200 + ((self.round_number - 1) * 30)
+        self.wpm_label.text = f"SPEED: {wpm} WPM"
+        word_delay = 60.0 / wpm
+
+        self.timer_event = Clock.schedule_interval(self.tick_rsvp_word, word_delay)
+
+    def tick_rsvp_word(self, dt):
+        if self.current_word_idx < len(self.current_story_words):
+            self.rsvp_label.text = self.current_story_words[self.current_word_idx]
+            self.current_word_idx += 1
+        else:
+            Clock.unschedule(self.timer_event)
+            self.rsvp_label.text = ""
+            Clock.schedule_once(lambda dt: self.transition_to_questions(), 1.0)
+
+    def transition_to_questions(self):
+        self.rsvp_container.opacity = 0
+        self.mcq_container.opacity = 1
+        self.mcq_container.disabled = False
+        self.load_next_question()
+
+    def load_next_question(self):
+        if self.questions_queue:
+            self.current_question = self.questions_queue.pop(0)
+            self.q_prompt_label.text = self.current_question['prompt']
+
+            for i, btn in enumerate(self.option_buttons):
+                btn.text = f"{chr(97 + i)})  {self.current_question['options'][i].upper()}"
+                btn.background_color = (0, 0.75, 1, 1)
+                btn.disabled = False
+        else:
+            self.trigger_round_complete()
+
+    def handle_answer_selection(self, instance):
+        if not self.current_question:
+            return
+
+        # Disable buttons during flash feedback
+        for btn in self.option_buttons:
+            btn.disabled = True
+
+        correct_idx = self.current_question['correct_idx']
+
+        if instance.option_idx == correct_idx:
+            trigger_haptic_feedback(0.04)
+            instance.background_color = (0.1, 0.8, 0.3, 1)  # Green
+            self.score += 5
+            self.score_label.text = f"SCORE: {self.score}"
+            
+            if self.score > self.high_score:
+                self.high_score = self.score
+                self.hi_score_label.text = f"BEST: {self.high_score}"
+                self.save_high_score()
+
+            Clock.schedule_once(lambda dt: self.load_next_question(), 0.8)
+        else:
+            trigger_haptic_feedback(0.12)
+            instance.background_color = (0.85, 0.15, 0.15, 1)  # Red Flash
+            self.option_buttons[correct_idx].background_color = (0.1, 0.8, 0.3, 1)  # Highlight Green
+            
+            Clock.schedule_once(lambda dt: self.load_next_question(), 1.2)
+
+    def trigger_round_complete(self):
+        self.round_number += 1
+        self.mcq_container.opacity = 0
+        self.mcq_container.disabled = True
+        self.rsvp_container.opacity = 1
+        self.rsvp_label.text = "ROUND COMPLETE!"
+        
+        self.start_btn.text = f"START GAME {self.round_number}"
+        if self.play_help_row not in self.layout.children:
+            self.layout.add_widget(self.play_help_row)
+
+    def stop_game_engine(self):
+        self.game_active = False
+        if self.timer_event:
+            Clock.unschedule(self.timer_event)
+            self.timer_event = None
+        self.rsvp_label.text = "READY?"
+        self.rsvp_container.opacity = 1
+        self.mcq_container.opacity = 0
+        self.mcq_container.disabled = True
+        
+class HalloweenGameScreen(Screen):
+    """
+    GRAVEYARD SHIFT (WHACK-A-GHOUL) - PHASE 3: ENEMY VARIETY & VISUAL METERS
+    """
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.score = 0
+        self.high_score = 0
+        self.game_active = False
+        
+        # 12:00 AM to 6:00 AM Shift Clock
+        self.shift_seconds_left = 60.0
+        
+        # Loose Ghouls & Panic State
+        self.loose_ghoul_count = 0
+        self.panic_level = 0.0  # 0.0 to 100.0
+        self.lantern_snuffed = False
+        self.jumpscare_active = False
+        self.jumpscare_timer = 0.0
+        
+        # Flashbang Effect State (from Wisp taps)
+        self.flashbang_alpha = 0.0
+        
+        # Sliding Lantern Properties
+        self.lantern_y_pct = 0.5
+        self.lantern_dir = 1
+        self.lantern_size = Scale.min_dim(0.12)
+        
+        # 3x3 Grave Grid State
+        self.graves = []
+        self.spawn_timer = 0.0
+        self.spawn_interval = 1.2
+        self.game_event = None
+
+        self.layout = RelativeLayout()
+        self.add_widget(self.layout)
+
+        # Base Night Grass Layer
+        with self.canvas.before:
+            Color(0.04, 0.10, 0.06, 1)
+            self.bg_rect = Rectangle(pos=self.pos, size=self.size)
+        self.bind(pos=self.update_bg, size=self.update_bg)
+
+        self.load_high_score()
+        
+        def apply_sharp_filtering(texture):
+            if texture:
+                texture.mag_filter = 'nearest'
+                texture.min_filter = 'nearest'
+
+        # --- HUD ELEMENTS ---
+        self.title_label = Label(
+            text="GRAVEYARD SHIFT", 
+            font_size=Scale.font(18), 
+            font_name='assets/fonts/ARCADE_N.TTF',
+            color=(1, 0.5, 0, 1),
+            pos_hint={'center_x': 0.5, 'center_y': 0.95}
+        )
+        self.layout.add_widget(self.title_label)
+
+        self.time_label = Label(
+            text="SHIFT: 12:00 AM", 
+            font_size=Scale.font(9), 
+            font_name='assets/fonts/ARCADE_N.TTF',
+            color=(0, 0.75, 1, 1), 
+            pos_hint={'center_x': 0.22, 'center_y': 0.89}
+        )
+        self.layout.add_widget(self.time_label)
+
+        self.score_label = Label(
+            text="WHACKS: 0", 
+            font_size=Scale.font(9), 
+            font_name='assets/fonts/ARCADE_N.TTF',
+            color=(1, 1, 1, 1), 
+            pos_hint={'center_x': 0.50, 'center_y': 0.89}
+        )
+        self.layout.add_widget(self.score_label)
+
+        self.hi_score_label = Label(
+            text=f"BEST: {self.high_score}", 
+            font_size=Scale.font(9), 
+            font_name='assets/fonts/ARCADE_N.TTF',
+            color=(1, 0.84, 0, 1), 
+            pos_hint={'center_x': 0.78, 'center_y': 0.89}
+        )
+        self.layout.add_widget(self.hi_score_label)
+
+        # Labels for visual meter indicators
+        self.ghoul_meter_title = Label(
+            text="LOOSE", 
+            font_size=Scale.font(7), 
+            font_name='assets/fonts/ARCADE_N.TTF',
+            color=(0.2, 0.8, 0.2, 1), 
+            pos_hint={'center_x': 0.28, 'center_y': 0.85}
+        )
+        self.layout.add_widget(self.ghoul_meter_title)
+
+        self.panic_meter_title = Label(
+            text="PANIC", 
+            font_size=Scale.font(7), 
+            font_name='assets/fonts/ARCADE_N.TTF',
+            color=(1, 0.8, 0, 1), 
+            pos_hint={'center_x': 0.72, 'center_y': 0.85}
+        )
+        self.layout.add_widget(self.panic_meter_title)
+
+        self.back_btn = Button(
+            text="< MENU", 
+            font_size=Scale.font(10), 
+            font_name='assets/fonts/ARCADE_N.TTF', 
+            color=(1, 1, 1, 1),
+            size_hint=(0.22, 0.05), 
+            pos_hint={'x': 0.0, 'top': 1.0},
+            background_normal='', 
+            background_color=(0.8, 0.25, 0.25, 1)
+        )
+        self.back_btn.bind(on_release=self.go_back_to_menu)
+        self.layout.add_widget(self.back_btn)
+
+        self.play_help_row = BoxLayout(
+            orientation='horizontal',
+            spacing=dp(10),
+            size_hint=(0.9, 0.08),
+            pos_hint={'center_x': 0.5, 'center_y': 0.08}
+        )
+        self.layout.add_widget(self.play_help_row)
+
+        self.start_btn = Button(
+            text="START SHIFT", 
+            font_size=Scale.font(14), 
+            font_name='assets/fonts/ARCADE_N.TTF',
+            color=(0.04, 0.06, 0.17, 1), 
+            size_hint_x=0.8,
+            background_normal='', 
+            background_color=(1, 0.5, 0, 1)
+        )
+        self.start_btn.bind(on_release=self.start_game)
+        self.play_help_row.add_widget(self.start_btn)
+
+        self.help_btn = Button(
+            text="?", 
+            font_size=Scale.font(14), 
+            font_name='assets/fonts/ARCADE_N.TTF',
+            background_normal='', 
+            background_color=(0, 0.5, 0.8, 1), 
+            color=(1, 1, 1, 1),
+            size_hint_x=0.2
+        )
+        self.help_btn.bind(on_release=self.show_instructions_overlay)
+        self.play_help_row.add_widget(self.help_btn)
+
+        self.build_grave_grid_state()
+
+    # --- INSTRUCTIONS OVERLAY ---
+    # --- INSTRUCTIONS OVERLAY FIX ---
+    def show_instructions_overlay(self, instance):
+        self.play_help_row.disabled = True
+        self.back_btn.disabled = True
+        
+        # Hide the canvas objects so they don't bleed through the overlay
+        self.canvas.remove_group('game_world')
+        
+        game_name = "Graveyard Shift"
+        rules = [
+            "Survive from 12:00 AM to 6:00 AM.",
+            "Green Ghouls = 1 tap. Armored Skeletons = 2 taps.",
+            "AVOID Yellow Wisps! Tapping causes blinding flashbangs.",
+            "3 missed ghouls snuff out lantern! Relight before Panic reaches 100%!"
+        ]
+        
+        overlay = InstructionOverlay(
+            game_name=game_name,
+            rules_list=rules,
+            close_callback=self.on_instructions_closed
+        )
+        self.layout.add_widget(overlay)
+
+    def on_instructions_closed(self):
+        self.play_help_row.disabled = False
+        self.back_btn.disabled = False
+        # Redraw the graveyard canvas elements now that instructions are dismissed
+        self.draw_graveyard_canvas()
+
+    def build_grave_grid_state(self):
+        self.graves = []
+        for row in range(3):
+            for col in range(3):
+                self.graves.append({
+                    'row': row,
+                    'col': col,
+                    'ghoul_active': False,
+                    'ghoul_timer': 0.0,
+                    'type': 'ghoul',  # 'ghoul', 'skeleton', 'wisp'
+                    'health': 1
+                })
+
+    def update_bg(self, *args):
+        self.bg_rect.pos = self.pos
+        self.bg_rect.size = self.size
+        apply_theme_background(self)
+        self.draw_graveyard_canvas()
+
+    def draw_graveyard_canvas(self):
+        self.canvas.remove_group('game_world')
+        if not self.graves:
+            return
+
+        grid_center_x = Window.width * 0.5
+        grid_center_y = Window.height * 0.48
+        spacing_x = Scale.width_pct(0.28)
+        spacing_y = Scale.height_pct(0.17)
+
+        grave_w = Scale.min_dim(0.20)
+        grave_h = Scale.min_dim(0.12)
+        tomb_w = grave_w * 0.60
+        tomb_h = grave_h * 0.70
+        ghoul_radius = grave_w * 0.35
+
+        with self.canvas:
+            # 1. GRAVEYARD GRID (Graves, Tombstones, Enemies)
+            for g in self.graves:
+                col_offset = (g['col'] - 1) * spacing_x
+                row_offset = (g['row'] - 1) * spacing_y
+                
+                cx = grid_center_x + col_offset
+                cy = grid_center_y + row_offset
+
+                g['cx'] = cx
+                g['cy'] = cy
+                g['w'] = grave_w
+                g['h'] = grave_h
+
+                # Light Gray Tombstone
+                Color(0.70, 0.72, 0.75, 1, group='game_world')
+                tomb_x = cx - (tomb_w / 2)
+                tomb_y = cy + (grave_h / 2) - dp(2)
+                Rectangle(pos=(tomb_x, tomb_y), size=(tomb_w, tomb_h), group='game_world')
+
+                # Active Enemies
+                if g['ghoul_active']:
+                    gx = cx - ghoul_radius
+                    gy = cy - ghoul_radius + (grave_h * 0.25)
+                    
+                    if g['type'] == 'ghoul':
+                        # Green Ghoul Sprite / Circle
+                        #Color(0.2, 0.9, 0.2, 1, group='game_world')
+                        #Ellipse(pos=(gx, gy), size=(ghoul_radius * 2, ghoul_radius * 2), group='game_world')
+                        # ATLAS SPRITE PLACEHOLDER:
+                        Rectangle(source='atlas://assets/images/game_sprites/ghoul', pos=(gx, gy+20), size=(ghoul_radius*2, ghoul_radius*2), group='game_world')
+
+                    elif g['type'] == 'skeleton':
+                        # White Armored Skeleton Triangle
+                        #Color(0.9, 0.9, 0.9, 1, group='game_world')
+                        # Draw triangle mesh representation
+                        #p1 = (cx, gy + ghoul_radius * 2)
+                        #p2 = (gx, gy)
+                        #p3 = (gx + ghoul_radius * 2, gy)
+                        #Mesh(vertices=[p1[0], p1[1], 0, 0, p2[0], p2[1], 0, 0, p3[0], p3[1], 0, 0], 
+                             #indices=[0, 1, 2], mode='triangles', group='game_world')
+                        # ATLAS SPRITE PLACEHOLDER:
+                        Rectangle(source='atlas://assets/images/game_sprites/skeleton', pos=(gx, gy+20), size=(ghoul_radius*2, ghoul_radius*2), group='game_world')
+
+                    elif g['type'] == 'wisp':
+                        # Yellow Will-o'-the-Wisp Circle
+                        Color(1.0, 0.85, 0.1, 1, group='game_world')
+                        #Ellipse(pos=(gx, gy), size=(ghoul_radius * 2, ghoul_radius * 2), group='game_world')
+                        # ATLAS SPRITE PLACEHOLDER:
+                        Rectangle(source='atlas://assets/images/game_sprites/wisp', pos=(gx, gy+20), size=(ghoul_radius*2, ghoul_radius*2), group='game_world')
+
+                # Dark Brown Dug Grave Rect
+                Color(0.22, 0.12, 0.05, 1, group='game_world')
+                Rectangle(pos=(cx - grave_w / 2, cy - grave_h / 2), size=(grave_w, grave_h), group='game_world')
+
+            # 2. HORIZONTAL HUD BARS (Loose Ghouls & Panic)
+            bar_w = Scale.width_pct(0.20)
+            bar_h = dp(12)
+
+            # A) Loose Ghoul Bar (Bright Green Border, Dark Green Fill)
+            ghoul_bar_x = Window.width * 0.28 - bar_w / 2
+            ghoul_bar_y = Window.height * 0.81
+            Color(0.2, 0.9, 0.2, 1, group='game_world')  # Bright Green Border
+            Rectangle(pos=(ghoul_bar_x - dp(2), ghoul_bar_y - dp(2)), size=(bar_w + dp(4), bar_h + dp(4)), group='game_world')
+            Color(0.05, 0.25, 0.05, 1, group='game_world')  # Dark Green Background
+            Rectangle(pos=(ghoul_bar_x, ghoul_bar_y), size=(bar_w, bar_h), group='game_world')
+            
+            fill_ratio = self.loose_ghoul_count / 3.0
+            if fill_ratio > 0:
+                Color(0.2, 0.8, 0.2, 1, group='game_world')  # Dark Green Fill
+                Rectangle(pos=(ghoul_bar_x, ghoul_bar_y), size=(bar_w * fill_ratio, bar_h), group='game_world')
+
+            # B) Panic Meter Bar (Yellow Border, Orange Fill)
+            panic_bar_x = Window.width * 0.72 - bar_w / 2
+            panic_bar_y = Window.height * 0.81
+            Color(1.0, 0.85, 0.1, 1, group='game_world')  # Yellow Border
+            Rectangle(pos=(panic_bar_x - dp(2), panic_bar_y - dp(2)), size=(bar_w + dp(4), bar_h + dp(4)), group='game_world')
+            Color(0.2, 0.1, 0.0, 1, group='game_world')  # Dark Background
+            Rectangle(pos=(panic_bar_x, panic_bar_y), size=(bar_w, bar_h), group='game_world')
+            
+            panic_ratio = min(1.0, max(0.0, self.panic_level / 100.0))
+            if panic_ratio > 0:
+                Color(1.0, 0.4, 0.0, 1, group='game_world')  # Pumpkin Orange Fill
+                Rectangle(pos=(panic_bar_x, panic_bar_y), size=(bar_w * panic_ratio, bar_h), group='game_world')
+
+            # 3. SLIDING LANTERN
+            if self.lantern_snuffed:
+                l_size = self.lantern_size
+                lx = Window.width - l_size - dp(10)
+                ly = self.lantern_y_pct * (Window.height - l_size)
+
+                self.lantern_rect = (lx, ly, l_size, l_size)
+
+                Color(0.2, 0.2, 0.2, 1, group='game_world')
+                Rectangle(pos=(lx, ly), size=(l_size, l_size), group='game_world')
+
+                Color(1.0, 0.9, 0.1, 1, group='game_world')
+                glow_margin = l_size * 0.2
+                Ellipse(
+                    pos=(lx + glow_margin, ly + glow_margin), 
+                    size=(l_size - glow_margin * 2, l_size - glow_margin * 2), 
+                    group='game_world'
+                )
+
+                # Blackout Overlay
+                Color(0, 0, 0, 0.85, group='game_world')
+                Rectangle(pos=(0, 0), size=Window.size, group='game_world')
+
+            # 4. FLASHBANG OVERLAY (Wisp Penalty)
+            if self.flashbang_alpha > 0.01:
+                Color(1, 1, 1, self.flashbang_alpha, group='game_world')
+                Rectangle(pos=(0, 0), size=Window.size, group='game_world')
+
+            # 5. JUMPSCARE OVERLAY
+            if self.jumpscare_active:
+                Color(1, 1, 1, 1, group='game_world')
+                Rectangle(
+                    source='atlas://assets/images/game_sprites/jumpscare',
+                    pos=(0, 0),
+                    size=Window.size,
+                    group='game_world'
+                )
+
+    # --- TOUCH & WHACK INTERACTION ---
+    def on_touch_down(self, touch):
+        if self.back_btn.collide_point(*touch.pos):
+            return super().on_touch_down(touch)
+
+        if not self.game_active or self.jumpscare_active:
+            return super().on_touch_down(touch)
+
+        # 1. Tap Obscured Lantern
+        if self.lantern_snuffed and hasattr(self, 'lantern_rect'):
+            lx, ly, lw, lh = self.lantern_rect
+            if lx <= touch.x <= lx + lw and ly <= touch.y <= ly + lh:
+                self.lantern_snuffed = False
+                trigger_haptic_feedback(0.08)
+                self.draw_graveyard_canvas()
+                return True
+
+        # 2. Whack Enemies
+        for g in self.graves:
+            if g['ghoul_active']:
+                dist_sq = (touch.x - g['cx'])**2 + (touch.y - g['cy'])**2
+                click_radius = (g['w'] / 2) * 1.2
+                
+                if dist_sq <= (click_radius ** 2):
+                    if g['type'] == 'wisp':
+                        # TRAP! Trigger Flashbang
+                        g['ghoul_active'] = False
+                        self.flashbang_alpha = 1.0
+                        trigger_haptic_feedback(0.15)
+                        self.draw_graveyard_canvas()
+                        return True
+
+                    elif g['type'] == 'skeleton':
+                        # Armored Skeleton: Requires 2 Taps
+                        g['health'] -= 1
+                        trigger_haptic_feedback(0.04)
+                        if g['health'] <= 0:
+                            g['ghoul_active'] = False
+                            self.add_score(1)
+                        self.draw_graveyard_canvas()
+                        return True
+
+                    else:
+                        # Standard Ghoul: 1 Tap
+                        g['ghoul_active'] = False
+                        self.add_score(1)
+                        trigger_haptic_feedback(0.06)
+                        self.draw_graveyard_canvas()
+                        return True
+
+        return super().on_touch_down(touch)
+
+    def add_score(self, amount):
+        self.score += amount
+        self.score_label.text = f"WHACKS: {self.score}"
+        if self.score > self.high_score:
+            self.high_score = self.score
+            self.hi_score_label.text = f"BEST: {self.high_score}"
+            self.save_high_score()
+
+    # --- ENGINE LOOP ---
+    def start_game(self, instance=None):
+        if self.play_help_row in self.layout.children:
+            self.layout.remove_widget(self.play_help_row)
+
+        self.score = 0
+        self.shift_seconds_left = 60.0
+        self.spawn_timer = 0.0
+        self.spawn_interval = 1.0
+        self.loose_ghoul_count = 0
+        self.panic_level = 0.0
+        self.flashbang_alpha = 0.0
+        self.lantern_snuffed = False
+        self.jumpscare_active = False
+
+        for g in self.graves:
+            g['ghoul_active'] = False
+            g['ghoul_timer'] = 0.0
+
+        self.score_label.text = "WHACKS: 0"
+        self.time_label.text = "SHIFT: 12:00 AM"
+        self.title_label.text = "SURVIVE THE SHIFT!"
+        self.title_label.color = (1, 0.5, 0, 1)
+
+        self.game_active = True
+        self.draw_graveyard_canvas()
+
+        if self.game_event:
+            Clock.unschedule(self.game_event)
+        self.game_event = Clock.schedule_interval(self.game_loop_tick, 1.0 / 60.0)
+
+    def game_loop_tick(self, dt):
+        if not self.game_active:
+            return
+
+        if self.jumpscare_active:
+            self.jumpscare_timer -= dt
+            if self.jumpscare_timer <= 0:
+                self.trigger_game_over()
+            return
+
+        # 1. Update Shift Clock
+        self.shift_seconds_left -= dt
+        if self.shift_seconds_left <= 0:
+            self.trigger_shift_complete()
+            return
+
+        elapsed = 60.0 - self.shift_seconds_left
+        hour = int((elapsed / 60.0) * 6)
+        display_hour = 12 if hour == 0 else hour
+        self.time_label.text = f"SHIFT: {display_hour}:00 AM"
+
+        # 2. Fade Flashbang
+        if self.flashbang_alpha > 0.0:
+            self.flashbang_alpha = max(0.0, self.flashbang_alpha - dt * 1.0)  # Fades over 1 sec
+
+        # 3. Lantern & Panic Depletion Logic
+        if self.lantern_snuffed:
+            self.lantern_y_pct += self.lantern_dir * dt * 0.45
+            if self.lantern_y_pct >= 0.8:
+                self.lantern_y_pct = 0.8
+                self.lantern_dir = -1
+            elif self.lantern_y_pct <= 0.15:
+                self.lantern_y_pct = 0.15
+                self.lantern_dir = 1
+
+            self.panic_level += dt * 35.0
+            if self.panic_level >= 100.0:
+                self.trigger_jumpscare()
+                return
+        else:
+            # Panic depletes slowly when lantern is lit
+            if self.panic_level > 0.0:
+                self.panic_level = max(0.0, self.panic_level - dt * 12.0)
+
+        # 4. Update Enemy Lifespans
+        for g in self.graves:
+            if g['ghoul_active']:
+                g['ghoul_timer'] -= dt
+                if g['ghoul_timer'] <= 0:
+                    g['ghoul_active'] = False
+                    # Wisps do NOT increment loose ghoul counter when missed
+                    if g['type'] != 'wisp':
+                        self.on_ghoul_escaped()
+
+        # 5. Spawns
+        self.spawn_timer += dt
+        if self.spawn_timer >= self.spawn_interval:
+            self.spawn_timer = 0.0
+            self.try_spawn_ghoul()
+
+        self.draw_graveyard_canvas()
+
+    def on_ghoul_escaped(self):
+        self.loose_ghoul_count += 1
+        
+        if self.loose_ghoul_count >= 3:
+            self.loose_ghoul_count = 0
+            self.lantern_snuffed = True
+            trigger_haptic_feedback(0.10)
+
+    def try_spawn_ghoul(self):
+        inactive_graves = [g for g in self.graves if not g['ghoul_active']]
+        if inactive_graves:
+            chosen_grave = random.choice(inactive_graves)
+            chosen_grave['ghoul_active'] = True
+            
+            # Pick random enemy type (60% Ghoul, 25% Skeleton, 15% Wisp)
+            roll = random.random()
+            if roll < 0.60:
+                chosen_grave['type'] = 'ghoul'
+                chosen_grave['health'] = 1
+            elif roll < 0.85:
+                chosen_grave['type'] = 'skeleton'
+                chosen_grave['health'] = 2
+            else:
+                chosen_grave['type'] = 'wisp'
+                chosen_grave['health'] = 1
+
+            base_lifespan = max(0.8, 1.8 - ((60.0 - self.shift_seconds_left) / 60.0) * 0.8)
+            chosen_grave['ghoul_timer'] = base_lifespan
+
+    # --- JUMPSCARE & GAME OVER ---
+    def trigger_jumpscare(self):
+        self.jumpscare_active = True
+        self.jumpscare_timer = 1.0
+        #trigger_haptic_feedback(0.50)
+        
+        SoundLoader.load('assets/audios/jumpscare.ogg').play()
+
+        self.draw_graveyard_canvas()
+
+    def trigger_game_over(self):
+        self.stop_game_engine()
+        self.title_label.text = "SHIFT FAILED!"
+        self.title_label.color = (1, 0.1, 0.1, 1)
+        self.start_btn.text = "RETRY SHIFT"
+
+        if self.play_help_row not in self.layout.children:
+            self.layout.add_widget(self.play_help_row)
+
+    def trigger_shift_complete(self):
+        self.stop_game_engine()
+        trigger_haptic_feedback(0.12)
+        self.title_label.text = "SURVIVED THE SHIFT!"
+        self.title_label.color = (0.1, 0.9, 0.3, 1)
+        self.start_btn.text = "NEXT SHIFT"
+
+        if self.play_help_row not in self.layout.children:
+            self.layout.add_widget(self.play_help_row)
+
+    def stop_game_engine(self):
+        self.game_active = False
+        self.lantern_snuffed = False
+        self.jumpscare_active = False
+        self.flashbang_alpha = 0.0
+        
+        if self.game_event:
+            Clock.unschedule(self.game_event)
+            self.game_event = None
+            
+        for g in self.graves:
+            g['ghoul_active'] = False
+            
+        self.draw_graveyard_canvas()
+
+    def on_pre_enter(self, *args):
+        apply_theme_background(self)
+        self.stop_game_engine()
+        self.title_label.text = "GRAVEYARD SHIFT"
+        self.title_label.color = (1, 0.5, 0, 1)
+        self.time_label.text = "SHIFT: 12:00 AM"
+        self.score_label.text = "WHACKS: 0"
+        self.loose_ghoul_count = 0
+        self.panic_level = 0.0
+        self.load_high_score()
+        self.hi_score_label.text = f"BEST: {self.high_score}"
+        
+        if self.play_help_row not in self.layout.children:
+            self.layout.add_widget(self.play_help_row)
+        self.play_help_row.disabled = False
+
+    def on_leave(self, *args):
+        self.stop_game_engine()
+        for child in list(self.layout.children):
+            if isinstance(child, InstructionOverlay):
+                self.layout.remove_widget(child)
+
+    def go_back_to_menu(self, instance):
+        self.stop_game_engine()
+        self.manager.current = 'menu'
+
+    def load_high_score(self):
+        self.high_score = web_load_game_data('graveyard_shift_high', 0)
+
+    def save_high_score(self):
+        web_save_game_data('graveyard_shift_high', self.high_score)
+        
+class ChristmasGameScreen(Screen):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.game_running = False
+        self.score = 0
+        self.high_score = 0
+        self.difficulties = ['EASY', 'NORMAL', 'HARD']
+        self.current_diff_idx = 1  # Default to NORMAL
+
+        # Sleigh Dimensions & Altitude Logic
+        self.sleigh_w = Scale.min_dim(0.18)
+        self.sleigh_h = Scale.min_dim(0.10)
+        self.sleigh_x = Window.width * 0.25
+        self.sleigh_y = Window.height * 0.75  # Spawns at 75% height
+        
+        # Altitude Bounds (Upper half: 50% to 95%)
+        self.min_sleigh_y = Window.height * 0.50
+        self.max_sleigh_y = Window.height * 0.95 - self.sleigh_h
+
+        # Missile Engine (Sky)
+        self.missiles = []
+        self.missile_w = Scale.min_dim(0.12)
+        self.missile_h = Scale.min_dim(0.04)
+
+        # Houses & Chimneys Engine (Ground)
+        self.houses = []
+        self.house_w = Scale.min_dim(0.24)
+        self.house_h = Scale.min_dim(0.20)
+
+        # Dropped Projectiles Engine (Presents / Coal)
+        self.dropped_items = []
+        self.item_size = Scale.min_dim(0.04)
+
+        # Timers & Loops
+        self.update_event = None
+        self.spawn_missile_event = None
+        self.spawn_house_event = None
+        self.touch_active = False
+
+        self.layout = RelativeLayout()
+        self.add_widget(self.layout)
+        
+        self.game_canvas_group = InstructionGroup()
+        self.canvas.add(self.game_canvas_group)
+
+        # Dark Cosmic Background
+        with self.canvas.before:
+            Color(0.04, 0.06, 0.17, 1)
+            self.bg_rect = Rectangle(pos=self.pos, size=self.size)
+        self.bind(pos=self.update_bg, size=self.update_bg)
+
+        # UI Headers
+        self.title_label = Label(
+            text="SLEIGH DROP", font_size=Scale.font(28), font_name='assets/fonts/ARCADE_N.TTF',
+            color=(0.85, 0.95, 1.0, 1), pos_hint={'center_x': 0.5, 'center_y': 0.90}
+        )
+        self.layout.add_widget(self.title_label)
+
+        self.score_label = Label(
+            text="SCORE: 0  |  BEST: 0", font_size=Scale.font(14), font_name='assets/fonts/ARCADE_N.TTF',
+            color=(1, 1, 1, 1), pos_hint={'center_x': 0.5, 'center_y': 0.82}
+        )
+        self.layout.add_widget(self.score_label)
+
+        # Back Button
+        self.back_btn = Button(
+            text="< MENU", font_size=Scale.font(15), font_name='assets/fonts/ARCADE_N.TTF', color=(1, 1, 1, 1),
+            size_hint=(0.25, 0.05), pos_hint={'x': 0.0, 'top': 1.0},
+            background_normal='', background_color=(0.8, 0.25, 0.25, 1)
+        )
+        self.back_btn.bind(on_release=self.go_back_to_menu)
+        self.layout.add_widget(self.back_btn)
+
+        # Action Controls Row (Menu)
+        self.play_help_row = BoxLayout(
+            orientation='horizontal', spacing=dp(10),
+            size_hint=(0.9, 0.1), pos_hint={'center_x': 0.5, 'center_y': 0.2}
+        )
+        self.layout.add_widget(self.play_help_row)
+
+        self.start_btn = Button(
+            text="START GAME", font_size=Scale.font(25), font_name='assets/fonts/ARCADE_N.TTF',
+            background_normal='', background_color=(0.75, 0.1, 0.1, 1), color=(1, 1, 1, 1),
+            size_hint_x=0.8
+        )
+        self.start_btn.bind(on_release=self.start_game)
+        self.play_help_row.add_widget(self.start_btn)
+
+        self.help_btn = Button(
+            text="?", font_size=Scale.font(16), font_name='assets/fonts/ARCADE_N.TTF',
+            background_normal='', background_color=(0.1, 0.55, 0.2, 1), color=(1, 1, 1, 1),
+            size_hint_x=0.2
+        )
+        self.help_btn.bind(on_release=self.show_instructions_overlay)
+        self.play_help_row.add_widget(self.help_btn)
+
+        # Difficulty Row
+        self.diff_row = BoxLayout(
+            orientation='horizontal', spacing=dp(10),
+            size_hint=(0.9, None), height=dp(45),
+            pos_hint={'center_x': 0.5, 'center_y': 0.1}
+        )
+        self.layout.add_widget(self.diff_row)
+
+        self.prev_diff_btn = Button(
+            text="<", font_name='assets/fonts/ARCADE_N.TTF', font_size=Scale.font(16), size_hint_x=0.2,
+            background_normal='', background_color=(0.75, 0.1, 0.1, 0.4), color=(1, 1, 1, 1)
+        )
+        self.prev_diff_btn.bind(on_release=lambda x: self.cycle_difficulty(-1))
+        self.diff_row.add_widget(self.prev_diff_btn)
+
+        self.diff_label = Label(
+            text="NORMAL", font_name='assets/fonts/ARCADE_N.TTF', font_size=Scale.font(16),
+            color=(1, 1, 1, 1), halign='center'
+        )
+        self.diff_row.add_widget(self.diff_label)
+
+        self.next_diff_btn = Button(
+            text=">", font_name='assets/fonts/ARCADE_N.TTF', font_size=Scale.font(16), size_hint_x=0.2,
+            background_normal='', background_color=(0.75, 0.1, 0.1, 0.4), color=(1, 1, 1, 1)
+        )
+        self.next_diff_btn.bind(on_release=lambda x: self.cycle_difficulty(1))
+        self.diff_row.add_widget(self.next_diff_btn)
+
+        # --- PHASE 2.2: DROP BUTTONS (Lower Right Zone) ---
+        self.drop_btn_container = BoxLayout(
+            orientation='vertical', spacing=dp(12),
+            size_hint=(None, None), size=(dp(65), dp(135)),
+            pos_hint={'right': 0.95, 'top': 0.48},
+            opacity=0, disabled=True
+        )
+        self.layout.add_widget(self.drop_btn_container)
+
+        # Top Button: Present (Red circle with Green Square icon)
+        self.btn_present = Button(
+            background_normal='', background_color=(0.75, 0.1, 0.1, 0.85),
+            size_hint=(1, 0.5)
+        )
+        self.btn_present.bind(on_release=lambda x: self.drop_item('present'))
+        
+        # Present Icon Layout inside button
+        with self.btn_present.canvas.after:
+            Color(0.1, 0.75, 0.2, 1) # Green square
+            self.present_icon_rect = Rectangle()
+        self.btn_present.bind(pos=self.update_btn_icons, size=self.update_btn_icons)
+        self.drop_btn_container.add_widget(self.btn_present)
+
+        # Bottom Button: Coal (Red circle with Black Circle icon)
+        self.btn_coal = Button(
+            background_normal='', background_color=(0.75, 0.1, 0.1, 0.85),
+            size_hint=(1, 0.5)
+        )
+        self.btn_coal.bind(on_release=lambda x: self.drop_item('coal'))
+
+        # Coal Icon Layout inside button
+        with self.btn_coal.canvas.after:
+            Color(0.1, 0.1, 0.1, 1) # Black circle
+            self.coal_icon_ellipse = Ellipse()
+        self.btn_coal.bind(pos=self.update_btn_icons, size=self.update_btn_icons)
+        self.drop_btn_container.add_widget(self.btn_coal)
+
+        self.load_high_score()
+
+    def update_btn_icons(self, *args):
+        # Center Present Icon
+        pw, ph = dp(20), dp(20)
+        px = self.btn_present.x + (self.btn_present.width - pw) / 2
+        py = self.btn_present.y + (self.btn_present.height - ph) / 2
+        self.present_icon_rect.pos = (px, py)
+        self.present_icon_rect.size = (pw, ph)
+
+        # Center Coal Icon
+        cw, ch = dp(20), dp(20)
+        cx = self.btn_coal.x + (self.btn_coal.width - cw) / 2
+        cy = self.btn_coal.y + (self.btn_coal.height - ch) / 2
+        self.coal_icon_ellipse.pos = (cx, cy)
+        self.coal_icon_ellipse.size = (cw, ch)
+
+    def show_instructions_overlay(self, instance):
+        self.play_help_row.disabled = True
+        self.diff_row.disabled = True
+        self.back_btn.disabled = True
+
+        rules = [
+            "Drag left side up/down to control Santa's altitude and dodge missiles",
+            "NICE houses (Green roofs) want PRESENTS (+10 pts)",
+            "NAUGHTY houses (Red roofs) want COAL (+10 pts)",
+            "Wrong drops deduct 10 points!"
+        ]
+
+        overlay = InstructionOverlay(
+            game_name="Sleigh Drop",
+            rules_list=rules,
+            close_callback=self.on_instructions_closed
+        )
+        self.layout.add_widget(overlay)
+
+    def on_instructions_closed(self):
+        self.play_help_row.disabled = False
+        self.diff_row.disabled = False
+        self.back_btn.disabled = False
+
+    def on_pre_enter(self, *args):
+        apply_theme_background(self)
+        self.update_difficulty_ui()
+        self.reset_menu_ui()
+        
+    def reset_menu_ui(self):
+        """Resets screen UI and forces canvas render when entering or returning."""
+        self.stop_engine()
+        self.game_running = False
+        
+        # Restore action buttons & hide drop buttons
+        self.play_help_row.opacity = 1
+        self.play_help_row.disabled = False
+        self.diff_row.opacity = 1
+        self.diff_row.disabled = False
+        
+        self.drop_btn_container.opacity = 0
+        self.drop_btn_container.disabled = True
+        
+        # Reset sleigh altitude & clear active entities
+        self.sleigh_y = Window.height * 0.75
+        self.missiles = []
+        self.houses = []
+        self.dropped_items = []
+        
+        # Redraw canvas after UI state settles
+        Clock.schedule_once(lambda dt: self.draw_game_canvas(), 0)
+
+    def on_leave(self, *args):
+        self.stop_engine()
+
+    def update_bg(self, *args):
+        self.bg_rect.pos = self.pos
+        self.bg_rect.size = self.size
+        self.sleigh_w = Scale.min_dim(0.18)
+        self.sleigh_h = Scale.min_dim(0.10)
+        self.sleigh_x = Window.width * 0.25
+        self.min_sleigh_y = Window.height * 0.50
+        self.max_sleigh_y = Window.height * 0.95 - self.sleigh_h
+
+        self.house_w = Scale.min_dim(0.48)
+        self.house_h = Scale.min_dim(0.40)
+        self.item_size = Scale.min_dim(0.04)
+
+        if not self.game_running:
+            self.sleigh_y = Window.height * 0.75
+
+        # Always trigger canvas draw on background updates
+        Clock.schedule_once(lambda dt: self.draw_game_canvas(), 0)
+
+    def cycle_difficulty(self, direction):
+        if self.game_running:
+            return
+        self.current_diff_idx = (self.current_diff_idx + direction) % len(self.difficulties)
+        self.update_difficulty_ui()
+
+    def update_difficulty_ui(self):
+        mode = self.difficulties[self.current_diff_idx]
+        self.diff_label.text = mode
+        self.load_high_score()
+        self.score_label.text = f"SCORE: {self.score}  |  BEST: {self.high_score}"
+
+    def load_high_score(self):
+        mode = self.difficulties[self.current_diff_idx].lower()
+        self.high_score = web_load_game_data(f'sleigh_drop_{mode}_high', 0)
+
+    def save_high_score(self):
+        mode = self.difficulties[self.current_diff_idx].lower()
+        web_save_game_data(f'sleigh_drop_{mode}_high', self.high_score)
+
+    def go_back_to_menu(self, instance=None):
+        self.stop_engine()
+        self.reset_menu_ui()  # Ensure clean slate when leaving
+        self.manager.current = 'menu'
+
+    def start_game(self, instance=None):
+        self.stop_engine()
+        self.score = 0
+        self.sleigh_y = Window.height * 0.75
+        self.missiles = []
+        self.houses = []
+        self.dropped_items = []
+
+        self.play_help_row.opacity = 0
+        self.play_help_row.disabled = True
+        self.diff_row.opacity = 0
+        self.diff_row.disabled = True
+
+        # Activate Drop Action Buttons
+        self.drop_btn_container.opacity = 1
+        self.drop_btn_container.disabled = False
+
+        self.game_running = True
+        self.score_label.text = f"SCORE: 0  |  BEST: {self.high_score}"
+
+        mode = self.difficulties[self.current_diff_idx]
+        missile_rate = 1.8 if mode == 'EASY' else (1.3 if mode == 'NORMAL' else 0.9)
+        house_rate = 1.2  # Doubled spawn rate (previously 2.4s)
+
+        self.spawn_missile(0)
+        self.spawn_house(0)
+
+        self.update_event = Clock.schedule_interval(self.update_physics, 1.0 / 60.0)
+        self.spawn_missile_event = Clock.schedule_interval(self.spawn_missile, missile_rate)
+        self.spawn_house_event = Clock.schedule_interval(self.spawn_house, house_rate)
+
+    def spawn_missile(self, dt):
+        if not self.game_running:
+            return
+
+        min_y = Window.height * 0.50
+        max_y = Window.height * 0.92 - self.missile_h
+        spawn_y = random.uniform(min_y, max_y)
+
+        mode = self.difficulties[self.current_diff_idx]
+        base_speed = Scale.vel_w(5.0) if mode == 'EASY' else (Scale.vel_w(7.0) if mode == 'NORMAL' else Scale.vel_w(9.0))
+
+        self.missiles.append({
+            'x': Window.width,
+            'y': spawn_y,
+            'speed': base_speed + random.uniform(-Scale.vel_w(0.5), Scale.vel_w(1.0))
+        })
+
+    def spawn_house(self, dt):
+        if not self.game_running:
+            return
+
+        mode = self.difficulties[self.current_diff_idx]
+        base_house_speed = Scale.vel_w(3.0) if mode == 'EASY' else (Scale.vel_w(4.2) if mode == 'NORMAL' else Scale.vel_w(5.4))
+
+        chimney_side = random.choice(['left', 'right'])
+        house_type = random.choice(['nice', 'naughty'])
+
+        self.houses.append({
+            'x': Window.width,
+            'y': 0,
+            'speed': base_house_speed,
+            'chimney_side': chimney_side,
+            'type': house_type
+        })
+
+    def drop_item(self, item_type):
+        if not self.game_running:
+            return
+
+        # Originates from sleigh center, drops straight down (vx = 0)
+        start_x = self.sleigh_x + (self.sleigh_w / 2) - (self.item_size / 2)
+        start_y = self.sleigh_y
+
+        self.dropped_items.append({
+            'x': start_x,
+            'y': start_y,
+            'vx': 0,                        # Zero forward momentum
+            'vy': -Scale.vel_h(4.0),        # Straight downward gravity pull
+            'type': item_type,
+            'size': self.item_size
+        })
+
+    def on_touch_down(self, touch):
+        if self.back_btn.collide_point(*touch.pos):
+            return super().on_touch_down(touch)
+
+        if self.game_running:
+            if self.drop_btn_container.collide_point(*touch.pos):
+                return super().on_touch_down(touch)
+
+            # Touch anywhere in the left half triggers sleigh altitude control
+            if touch.x <= Window.width * 0.50:
+                self.touch_active = True
+                self.update_sleigh_altitude(touch.y)
+                return True
+        return super().on_touch_down(touch)
+
+    def on_touch_move(self, touch):
+        if self.game_running and self.touch_active:
+            if touch.x <= Window.width * 0.50:
+                self.update_sleigh_altitude(touch.y)
+                return True
+        return super().on_touch_move(touch)
+
+    def on_touch_up(self, touch):
+        self.touch_active = False
+        return super().on_touch_up(touch)
+
+    def update_sleigh_altitude(self, touch_y):
+        target_y = touch_y - (self.sleigh_h / 2)
+        self.sleigh_y = max(self.min_sleigh_y, min(self.max_sleigh_y, target_y))
+
+    def update_physics(self, dt):
+        if not self.game_running:
+            return
+
+        # 1. Update Missiles
+        for m in self.missiles[:]:
+            m['x'] -= m['speed'] * (dt * 60.0)
+
+            if self.check_sleigh_collision(m):
+                trigger_haptic_feedback(0.12)
+                self.game_over()
+                return
+
+            if m['x'] < -self.missile_w:
+                self.missiles.remove(m)
+
+        # 2. Update Houses
+        for h in self.houses[:]:
+            h['x'] -= h['speed'] * (dt * 60.0)
+
+            total_house_width = self.house_w + Scale.min_dim(0.06)
+            if h['x'] < -total_house_width:
+                self.houses.remove(h)
+
+        # 3. Update Dropped Items & Check Chimney Collisions
+        gravity = Scale.vel_h(0.25)
+        for item in self.dropped_items[:]:
+            item['x'] += item['vx'] * (dt * 60.0)
+            item['y'] += item['vy'] * (dt * 60.0)
+            item['vy'] -= gravity * (dt * 60.0)  # Gravity acceleration
+
+            # Check Chimney Collision
+            hit_chimney = False
+            for h in self.houses:
+                if self.check_item_chimney_collision(item, h):
+                    hit_chimney = True
+                    is_nice = (h['type'] == 'nice')
+                    is_present = (item['type'] == 'present')
+
+                    # RULE: Present + Nice (+10) | Coal + Naughty (+10) | Mismatch (-10)
+                    if (is_present and is_nice) or (not is_present and not is_nice):
+                        self.score += 10
+                        trigger_haptic_feedback(0.05)
+                    else:
+                        self.score = max(0, self.score - 10)
+                        trigger_haptic_feedback(0.15)
+
+                    if self.score > self.high_score:
+                        self.high_score = self.score
+                    self.score_label.text = f"SCORE: {self.score}  |  BEST: {self.high_score}"
+                    break
+
+            if hit_chimney or item['y'] < 0 or item['x'] > Window.width:
+                self.dropped_items.remove(item)
+
+        self.draw_game_canvas()
+
+    def check_sleigh_collision(self, missile):
+        s_left, s_right = self.sleigh_x, self.sleigh_x + self.sleigh_w
+        s_bottom, s_top = self.sleigh_y, self.sleigh_y + self.sleigh_h
+
+        m_left, m_right = missile['x'], missile['x'] + self.missile_w
+        m_bottom, m_top = missile['y'], missile['y'] + self.missile_h
+
+        return (s_left < m_right and s_right > m_left and
+                s_bottom < m_top and s_top > m_bottom)
+
+    def check_item_chimney_collision(self, item, house):
+        hx, hy = house['x'], house['y']
+        hw, hh = self.house_w, self.house_h
+        roof_h = hh * 0.50
+
+        # Scaled chimney and lip target bounds
+        chimney_w = hw * 0.18
+        chimney_h = roof_h * 0.90
+        chimney_x_offset = hw * 0.22 if house['chimney_side'] == 'left' else hw * 0.60
+        chimney_x = hx + chimney_x_offset
+        chimney_y = hy + hh + (roof_h * 0.35)
+
+        lip_overhang = dp(6)
+        lip_w = chimney_w + (lip_overhang * 2)
+        lip_h = dp(12)
+        lip_x = chimney_x - lip_overhang
+        lip_y = chimney_y + chimney_h
+
+        # AABB Collision Box
+        i_left, i_right = item['x'], item['x'] + item['size']
+        i_bottom, i_top = item['y'], item['y'] + item['size']
+
+        return (i_left < (lip_x + lip_w) and i_right > lip_x and
+                i_bottom < (lip_y + lip_h) and i_top > lip_y)
+
+    def draw_game_canvas(self):
+        # Clear previous instruction group shapes directly
+        self.game_canvas_group.clear()
+
+        # --- 1. ENLARGED HOUSES ---
+        for h in self.houses:
+            hx, hy = h['x'], h['y']
+            hw, hh = self.house_w, self.house_h
+
+            roof_overhang = Scale.min_dim(0.05)
+            roof_w = hw + (roof_overhang * 2)
+            roof_h = hh * 0.50
+            roof_x = hx - roof_overhang
+            roof_apex_y = hy + hh + roof_h
+
+            chimney_w = hw * 0.18
+            chimney_h = roof_h * 0.90
+            chimney_x_offset = hw * 0.22 if h['chimney_side'] == 'left' else hw * 0.60
+            chimney_x = hx + chimney_x_offset
+            chimney_y = hy + hh + (roof_h * 0.35)
+
+            lip_overhang = dp(6)
+            lip_w = chimney_w + (lip_overhang * 2)
+            lip_h = dp(12)
+            lip_x = chimney_x - lip_overhang
+            lip_y = chimney_y + chimney_h
+
+            # Roof & Chimney Color (Nice = Green | Naughty = Red)
+            if h['type'] == 'nice':
+                self.game_canvas_group.add(Color(0.1, 0.55, 0.2, 1))
+            else:
+                self.game_canvas_group.add(Color(0.75, 0.1, 0.1, 1))
+
+            self.game_canvas_group.add(Rectangle(pos=(chimney_x, chimney_y), size=(chimney_w, chimney_h)))
+            self.game_canvas_group.add(Rectangle(pos=(lip_x, lip_y), size=(lip_w, lip_h)))
+
+            # Wood House Body
+            self.game_canvas_group.add(Color(0.45, 0.25, 0.12, 1))
+            self.game_canvas_group.add(Rectangle(pos=(hx, hy), size=(hw, hh)))
+
+            # Roof Triangle
+            if h['type'] == 'nice':
+                self.game_canvas_group.add(Color(0.1, 0.55, 0.2, 1))
+            else:
+                self.game_canvas_group.add(Color(0.75, 0.1, 0.1, 1))
+
+            roof_vertices = [
+                roof_x, hy + hh, 0, 0,
+                roof_x + roof_w, hy + hh, 0, 0,
+                hx + (hw / 2), roof_apex_y, 0, 0
+            ]
+            self.game_canvas_group.add(Mesh(vertices=roof_vertices, indices=[0, 1, 2], mode='triangles'))
+
+        # --- 2. DROPPED ITEMS (Presents / Coal) ---
+        for item in self.dropped_items:
+            self.game_canvas_group.add(Color(1, 1, 1, 1))  # Pure white tint so atlas sprite colors render untinted
+            if item['type'] == 'present':
+                self.game_canvas_group.add(Rectangle(
+                    source='atlas://assets/images/game_sprites/present',
+                    pos=(item['x'], item['y']),
+                    size=(item['size'], item['size'])
+                ))
+            else:
+                self.game_canvas_group.add(Rectangle(
+                    source='atlas://assets/images/game_sprites/coal',
+                    pos=(item['x'], item['y']),
+                    size=(item['size'], item['size'])
+                ))
+
+        # --- 3. SANTA'S SLEIGH ---
+        self.game_canvas_group.add(Color(1, 1, 1, 1))
+        self.game_canvas_group.add(Rectangle(
+            source='atlas://assets/images/game_sprites/santa_sleigh',
+            pos=(self.sleigh_x, self.sleigh_y),
+            size=(self.sleigh_w, self.sleigh_h)
+        ))
+
+        # --- 4. MISSILES ---
+        self.game_canvas_group.add(Color(1, 1, 1, 1))
+        for m in self.missiles:
+            self.game_canvas_group.add(Rectangle(
+                source='atlas://assets/images/game_sprites/missile',
+                pos=(m['x'], m['y']),
+                size=(self.missile_w, self.missile_h)
+            ))
+
+    def game_over(self):
+        self.game_running = False
+        self.stop_engine()
+
+        self.load_high_score()
+        if self.score > self.high_score:
+            self.high_score = self.score
+            self.save_high_score()
+
+        self.score_label.text = f"SCORE: {self.score}  |  BEST: {self.high_score}"
+        self.play_help_row.opacity = 1
+        self.play_help_row.disabled = False
+        self.diff_row.opacity = 1
+        self.diff_row.disabled = False
+        self.start_btn.text = "RETRY FLIGHT"
+
+    def stop_engine(self):
+        if self.update_event:
+            Clock.unschedule(self.update_event)
+            self.update_event = None
+        if self.spawn_missile_event:
+            Clock.unschedule(self.spawn_missile_event)
+            self.spawn_missile_event = None
+        if self.spawn_house_event:
+            Clock.unschedule(self.spawn_house_event)
+            self.spawn_house_event = None
+
+        self.drop_btn_container.opacity = 0
+        self.drop_btn_container.disabled = True
+
+        if hasattr(self, 'game_canvas_group'):
+            self.game_canvas_group.clear()
+        self.missiles = []
+        self.houses = []
+        self.dropped_items = []
 
 class ProtanopiaEffect(EffectBase):
     glsl = """
@@ -9082,58 +12415,199 @@ class MonochromeEffect(EffectBase):
     }
     """
 
-class BrainGamesApp(App):        
-    def build(self):
-        Window.bind(on_keyboard=self.on_hardware_back_button)
-        self.haptics_enabled = self.load_haptics_setting()
-        self.current_music_name = self.load_music_setting()
-        self.color_blind_mode = self.load_color_blind_setting()
-        
-        Builder.load_file('main.kv')
-        if platform in ['win', 'linux', 'macosx']:
-            Window.size = (360, 640) 
-            
+class BrainGamesApp(App):
+    
+    active_atlas_prefix = StringProperty('atlas://assets/images/game_sprites/')
+    
+    def update_active_atlas_prefix(self):
+        """Updates the active atlas path based on active seasonal state."""
+        if self.is_christmas_active():
+            self.active_atlas_prefix = 'atlas://assets/images/game_sprites_christmas/'
+        elif self.is_halloween_active():
+            self.active_atlas_prefix = 'atlas://assets/images/game_sprites_halloween/'
+        else:
+            self.active_atlas_prefix = 'atlas://assets/images/game_sprites/'
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.color_blind_mode = 'NONE'
+        self.haptics_enabled = True
+        self.is_muted = False
+        self.current_music_name = 'CLASSIC'
         self.bg_track = None
-        self.load_bg_track(self.current_music_name)
+        self.effect_layer = None
+        self.sm = None
+        self.seasonal_ui_enabled = True
+        self.dev_halloween_override = False
+
+    def build(self):
+        Window.bind(on_hardware_back_button=self.on_hardware_back_button)
         
-        # Root Effect Wrapper
+        if platform in ['win', 'linux', 'macosx']:
+            Window.size = (360, 640)
+
+        Builder.load_file('main.kv')
+
+        # Load Seasonal Preferences First
+        self.seasonal_ui_enabled = web_load_game_data('seasonal_ui_enabled', True)
+        self.dev_halloween_override = web_load_game_data('dev_halloween_override', False)
+        self.load_seasonal_settings()
+        self.load_user_settings()
+
+        # 1. Outer Container for Shader/Colorblind Effects
         self.effect_layer = EffectWidget()
 
-        sm = ScreenManager()
-        sm.add_widget(MainMenuScreen(name='menu'))
-        sm.add_widget(AboutScreen(name='about'))
-        sm.add_widget(SettingsScreen(name='settings'))
-        sm.add_widget(ToastyMallowScreen(name='toasty_mallow'))
-        sm.add_widget(FocusFlashScreen(name='focus_flash'))
-        sm.add_widget(PlanetHopperScreen(name='planet_hopper'))
-        sm.add_widget(StroopMatchScreen(name='stroop_match'))
-        sm.add_widget(AirTrafficControlScreen(name='air_traffic'))
-        sm.add_widget(CodeCaptureScreen(name='code_capture'))
-        sm.add_widget(PointVelocityScreen(name='point_velocity'))
-        sm.add_widget(ConsecutiveShapesScreen(name='consecutive_shapes'))
-        sm.add_widget(MatrixRecallScreen(name='matrix_recall'))
-        sm.add_widget(RotationalMazeScreen(name='rotational_maze'))
-        sm.add_widget(SinkyStoneScreen(name='sinky_stone'))
-        sm.add_widget(GridLockScreen(name='grid_lock'))
-        sm.add_widget(AgainstGrainScreen(name='against_grain'))
-        sm.add_widget(HigherEquationScreen(name='higher_equation'))
-        sm.add_widget(WhatsNextScreen(name='whats_next'))
-        sm.add_widget(WaiterWaiterScreen(name='waiter_waiter'))
-        sm.add_widget(GateKeeperScreen(name='gate_keeper'))
-        sm.add_widget(DropOffScreen(name='drop_off'))
-        sm.add_widget(ZenBreathingScreen(name='zen_breathing')) 
-        sm.add_widget(ScreenshotScreen(name='screenshot'))
-        sm.add_widget(LineFillScreen(name='linefill'))
-        sm.add_widget(MathInvadersScreen(name='math_invaders'))
-        sm.add_widget(SequenceSwitchScreen(name='sequence_switch'))
-        sm.add_widget(TileTurnpikeScreen(name='tile_turnpike'))
-        sm.add_widget(NeonPythonScreen(name='neon_python'))
+        # 2. Register Screens in ScreenManager
+        self.sm = ScreenManager()
+        self.sm.add_widget(MainMenuScreen(name='menu'))
+        self.sm.add_widget(AboutScreen(name='about'))
+        self.sm.add_widget(AchievementsScreen(name='achievements_screen'))
+        self.sm.add_widget(SettingsScreen(name='settings'))
+        self.sm.add_widget(ToastyMallowScreen(name='toasty_mallow'))
+        self.sm.add_widget(FocusFlashScreen(name='focus_flash'))
+        self.sm.add_widget(PlanetHopperScreen(name='planet_hopper'))
+        self.sm.add_widget(StroopMatchScreen(name='stroop_match'))
+        self.sm.add_widget(AirTrafficControlScreen(name='air_traffic'))
+        self.sm.add_widget(CodeCaptureScreen(name='code_capture'))
+        self.sm.add_widget(PointVelocityScreen(name='point_velocity'))
+        self.sm.add_widget(ConsecutiveShapesScreen(name='consecutive_shapes'))
+        self.sm.add_widget(MatrixRecallScreen(name='matrix_recall'))
+        self.sm.add_widget(RotationalMazeScreen(name='rotational_maze'))
+        self.sm.add_widget(SinkyStoneScreen(name='sinky_stone'))
+        self.sm.add_widget(GridLockScreen(name='grid_lock'))
+        self.sm.add_widget(AgainstGrainScreen(name='against_grain'))
+        self.sm.add_widget(HigherEquationScreen(name='higher_equation'))
+        self.sm.add_widget(WhatsNextScreen(name='whats_next'))
+        self.sm.add_widget(WaiterWaiterScreen(name='waiter_waiter'))
+        self.sm.add_widget(GateKeeperScreen(name='gate_keeper'))
+        self.sm.add_widget(DropOffScreen(name='drop_off'))
+        self.sm.add_widget(ZenBreathingScreen(name='zen_breathing')) 
+        self.sm.add_widget(ScreenshotScreen(name='screenshot'))
+        self.sm.add_widget(LineFillScreen(name='linefill'))
+        self.sm.add_widget(MathInvadersScreen(name='math_invaders'))
+        self.sm.add_widget(SequenceSwitchScreen(name='sequence_switch'))
+        self.sm.add_widget(TileTurnpikeScreen(name='tile_turnpike'))
+        self.sm.add_widget(NeonPythonScreen(name='neon_python'))
+        self.sm.add_widget(LockPickScreen(name='lock_pick'))
+        self.sm.add_widget(RapidReaderScreen(name='rapid_reader'))
+        self.sm.add_widget(CheatsScreen(name='cheats'))
+        self.sm.add_widget(HalloweenGameScreen(name='halloween_game'))
+        self.sm.add_widget(ChristmasGameScreen(name='christmas_game'))
 
-        self.effect_layer.add_widget(sm)
+        # Embed ScreenManager inside EffectWidget
+        self.effect_layer.add_widget(self.sm)
 
+        # 3. Load User Preferences & Music
+        self.load_user_settings()
+        self.load_bg_track(self.current_music_name)
         Clock.schedule_once(lambda dt: self.apply_color_blind_filter(self.color_blind_mode), 0.1)
         
+        saved_track = web_load_game_data('current_music_name', 'CLASSIC')
+        self.switch_music_track(saved_track)
+        
+        # FIXED: Return the outer wrapper layout instead of self.sm
         return self.effect_layer
+    
+    def is_halloween_active(self):
+        """Returns True if dev override is ON OR if the current date is in October (Oct 1 - Oct 31)."""
+        # 1. Dev Cheat Override Check
+        if getattr(self, 'dev_halloween_override', False):
+            return True
+
+        # 2. Seasonal Date Check (October 1 to October 31)
+        if getattr(self, 'seasonal_ui_enabled', True):
+            now = datetime.now()
+            if now.month == 10:  # October
+                return True
+
+        return False
+    
+    def is_halloween_active(self):
+        """Returns True if Halloween UI should be displayed."""
+        if not self.seasonal_ui_enabled:
+            return False
+        if self.dev_halloween_override:
+            return True
+            
+        # Real-time seasonal check fallback
+        from datetime import datetime
+        today = datetime.now()
+        return today.month == 10  # Active for the month of October
+
+    def get_primary_bg_color(self):
+        """Returns Spooky Purple if Halloween is active, else Deep Cosmic Blue."""
+        if self.is_halloween_active():
+            return (0.12, 0.04, 0.22, 1)  # Dark Spooky Purple (#1F0A38)
+        return (0.04, 0.06, 0.17, 1)      # Classic Dark Blue (#0A0F2C)
+    
+    def get_accent_color(self):
+        """Returns Glowing Orange if Halloween is active, else Neon Cyan Blue."""
+        if self.is_halloween_active():
+            return (1.0, 0.5, 0.0, 1)     # Pumpkin / Glowing Orange (#FF8000)
+        return (0.0, 0.75, 1.0, 1)        # Classic Arcade Cyan (#00BFFF)
+
+    def is_christmas_active(self):
+        """Checks if Christmas seasonal UI should be rendered."""
+        if not getattr(self, 'seasonal_ui_enabled', True):
+            return False
+        if getattr(self, 'dev_christmas_override', False):
+            return True
+        # Date check fallback
+        today = datetime.now()
+        return today.month == 12 or (today.month == 1 and today.day <= 6)
+    
+    '''def is_christmas_active(self):
+        "Active during December if seasonal UI is enabled, or if dev Christmas override is True."
+        if self.dev_christmas_override:
+            return True
+        if not self.seasonal_ui_enabled:
+            return False
+        return datetime.now().month == 12'''
+    
+    def save_seasonal_settings(self):
+        """Saves seasonal UI preference and dev overrides into persistent JSON save file."""
+        web_save_game_data('seasonal_ui_enabled', self.seasonal_ui_enabled)
+        web_save_game_data('dev_halloween_override', self.dev_halloween_override)
+        web_save_game_data('dev_christmas_override', self.dev_christmas_override)
+        
+    def load_seasonal_settings(self):
+        """Loads persistent seasonal state and dev overrides from JSON."""
+        self.seasonal_ui_enabled = web_load_game_data('seasonal_ui_enabled', True)
+        self.dev_halloween_override = web_load_game_data('dev_halloween_override', False)
+        self.dev_christmas_override = web_load_game_data('dev_christmas_override', False)
+        
+    def refresh_all_screen_backgrounds(self):
+        if hasattr(self, 'sm') and self.sm:
+            for screen in self.sm.screens:
+                apply_theme_background(screen)
+
+    def load_user_settings(self):
+        """Loads all persistent user preferences from disk."""
+        self.color_blind_mode = web_load_game_data('color_blind_mode', 'NONE')
+        self.haptics_enabled = web_load_game_data('haptics_enabled', True)
+        self.current_music_name = web_load_game_data('music_track', 'CLASSIC')
+        self.is_muted = web_load_game_data('is_muted', False)
+        
+        saved_vol = web_load_game_data('volume', 0.5)
+        if self.bg_track:
+            self.bg_track.volume = 0.0 if self.is_muted else saved_vol
+
+    def save_color_blind_setting(self, mode):
+        self.color_blind_mode = mode
+        web_save_game_data('color_blind_mode', mode)
+
+    def save_haptics_setting(self, enabled):
+        self.haptics_enabled = enabled
+        web_save_game_data('haptics_enabled', enabled)
+
+    def save_music_setting(self, track_name):
+        self.current_music_name = track_name
+        web_save_game_data('music_track', track_name)
+
+    def save_audio_settings(self):
+        if self.bg_track:
+            web_save_game_data('volume', self.bg_track.volume)
+            web_save_game_data('is_muted', self.is_muted)
 
     def apply_color_blind_filter(self, mode):
         """Swaps the active EffectBase class applied to the EffectWidget."""
@@ -9145,7 +12619,7 @@ class BrainGamesApp(App):
             'NONE': []
         }
         
-        if hasattr(self, 'effect_layer'):
+        if hasattr(self, 'effect_layer') and self.effect_layer:
             self.effect_layer.effects = mode_map.get(mode, [])
 
     def transform_color(self, rgba):
@@ -9155,36 +12629,31 @@ class BrainGamesApp(App):
         mode = getattr(self, 'color_blind_mode', 'NONE')
 
         if mode == 'PROTANOPIA':
-            # Red-Blind shift towards yellow/blue spectrum
             nr = 0.56667 * r + 0.43333 * g
             ng = 0.55833 * r + 0.44167 * g
             nb = 0.24167 * g + 0.75833 * b
             return (nr, ng, nb, a)
         elif mode == 'DEUTERANOPIA':
-            # Green-Blind shift
             nr = 0.625 * r + 0.375 * g
             ng = 0.70 * r + 0.30 * g
             nb = 0.30 * g + 0.70 * b
             return (nr, ng, nb, a)
         elif mode == 'TRITANOPIA':
-            # Blue-Blind shift
             nr = 0.95 * r + 0.05 * g
             ng = 0.433 * g + 0.567 * b
             nb = 0.475 * g + 0.525 * b
             return (nr, ng, nb, a)
         elif mode == 'MONOCHROME':
-            # Achromatopsia / High Contrast Luminance Mapping
             lum = 0.299 * r + 0.587 * g + 0.114 * b
             return (lum, lum, lum, a)
             
         return (r, g, b, a)
 
     def on_hardware_back_button(self, window, key, *args):
-        if key == 27:  # 27 is the Android back key / ESC key code
-            sm = self.root
-            if sm.current != 'menu':
-                sm.current = 'menu'
-                return True  # Consumes event (prevents exiting app)
+        if key == 27:  # Android back key / ESC
+            if self.sm and self.sm.current != 'menu':
+                self.sm.current = 'menu'
+                return True
         return False
     
     def on_pause(self):
@@ -9195,12 +12664,13 @@ class BrainGamesApp(App):
     def on_resume(self):
         if self.bg_track and hasattr(self.bg_track, 'resume'):
             self.bg_track.resume()
-    
+
     def get_track_file(self, track_name):
         mapping = {
             'CLASSIC': 'assets/audios/arcade_theme.ogg',
             'HARDCORE': 'assets/audios/arcade_theme_hardcore.ogg',
-            'CHILL': 'assets/audios/arcade_theme_chill.ogg'
+            'CHILL': 'assets/audios/arcade_theme_chill.ogg',
+            'HALLOWEEN': 'assets/audios/arcade_theme_halloween.ogg'
         }
         return mapping.get(track_name, 'assets/audios/arcade_theme.ogg')
 
@@ -9213,81 +12683,43 @@ class BrainGamesApp(App):
         self.bg_track = SoundLoader.load(file_path)
         if self.bg_track:
             self.bg_track.loop = True
-            self.bg_track.volume = current_vol
+            self.bg_track.volume = 0.0 if self.is_muted else current_vol
             self.bg_track.play()
 
     def switch_music_track(self, track_name):
+        """Switches background audio stream and saves choice."""
+        music_files = {
+            'CLASSIC': 'assets/audios/arcade_theme.ogg',
+            'HARDCORE': 'assets/audios/arcade_theme_hardcore.ogg',
+            'CHILL': 'assets/audios/arcade_theme_chill.ogg',
+            'HALLOWEEN': 'assets/audios/arcade_theme_halloween.ogg',
+            'CHRISTMAS': 'assets/audios/arcade_theme_christmas.ogg'
+        }
+
+        if track_name not in music_files:
+            track_name = 'CLASSIC'
+
         self.current_music_name = track_name
-        self.save_music_setting(track_name)
-        self.load_bg_track(track_name)
+        current_vol = self.bg_track.volume if hasattr(self, 'bg_track') and self.bg_track else 0.5
 
-    def load_music_setting(self):
-        try:
-            if os.path.exists('save_data.json'):
-                with open('save_data.json', 'r') as f:
-                    data = json.load(f)
-                    return data.get('music_track', 'CLASSIC')
-        except Exception:
-            pass
-        return 'CLASSIC'
+        if hasattr(self, 'bg_track') and self.bg_track:
+            self.bg_track.stop()
+            self.bg_track = None
 
-    def save_music_setting(self, track_name):
-        try:
-            data = {}
-            if os.path.exists('save_data.json'):
-                with open('save_data.json', 'r') as f:
-                    data = json.load(f)
-            data['music_track'] = track_name
-            with open('save_data.json', 'w') as f:
-                json.dump(data, f)
-        except Exception:
-            pass
-            
-    def load_haptics_setting(self):
-        try:
-            if os.path.exists('save_data.json'):
-                with open('save_data.json', 'r') as f:
-                    data = json.load(f)
-                    return data.get('haptics_enabled', True)
-        except Exception:
-            pass
-        return True
+        file_path = music_files[track_name]
+        if os.path.exists(file_path):
+            self.bg_track = SoundLoader.load(file_path)
+            if self.bg_track:
+                self.bg_track.loop = True
+                self.bg_track.volume = 0.0 if getattr(self, 'is_muted', False) else current_vol
+                self.bg_track.play()
 
-    def save_haptics_setting(self, enabled):
-        self.haptics_enabled = enabled
-        try:
-            data = {}
-            if os.path.exists('save_data.json'):
-                with open('save_data.json', 'r') as f:
-                    data = json.load(f)
-            data['haptics_enabled'] = enabled
-            with open('save_data.json', 'w') as f:
-                json.dump(data, f)
-        except Exception:
-            pass
+        # Save track name to JSON
+        web_save_game_data('current_music_name', self.current_music_name)
         
-    def load_color_blind_setting(self):
-        try:
-            if os.path.exists('save_data.json'):
-                with open('save_data.json', 'r') as f:
-                    data = json.load(f)
-                    return data.get('color_blind_mode', 'NONE')
-        except Exception:
-            pass
-        return 'NONE'
-
-    def save_color_blind_setting(self, mode):
-        self.color_blind_mode = mode
-        try:
-            data = {}
-            if os.path.exists('save_data.json'):
-                with open('save_data.json', 'r') as f:
-                    data = json.load(f)
-            data['color_blind_mode'] = mode
-            with open('save_data.json', 'w') as f:
-                json.dump(data, f)
-        except Exception:
-            pass
+    def on_start(self):
+        # Sync atlas path on launch
+        self.update_active_atlas_prefix()
 
 if __name__ == "__main__":
     BrainGamesApp().run()

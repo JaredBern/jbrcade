@@ -11,10 +11,10 @@ jobs:
 
     steps:
       - name: Checkout Repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Set up Python
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.10'
 
@@ -30,25 +30,26 @@ jobs:
 
       - name: Create Xcode Project
         run: |
-          toolchain create JBRCADE ./src
+          toolchain create jbrcade ./src
 
       - name: Build iOS App Package
         run: |
-          xcodebuild -project JBRCADE-ios/JBRCADE.xcodeproj \
-            -scheme JBRCADE \
+          xcodebuild -project jbrcade-ios/jbrcade.xcodeproj \
+            -scheme jbrcade \
             -configuration Release \
             -sdk iphoneos \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO \
+            SYMROOT="$(PWD)/jbrcade-ios/build"
 
       - name: Zip iOS Output
         run: |
-          cd JBRCADE-ios/build/Release-iphoneos
-          zip -r JBRCADE-iOS.zip JBRCADE.app
+          cd jbrcade-ios/build/Release-iphoneos
+          zip -r JBRCADE-iOS.zip jbrcade.app
 
       - name: Upload iOS Build Artifact
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: JBRCADE-iOS-App
-          path: JBRCADE-ios/build/Release-iphoneos/JBRCADE-iOS.zip
+          path: jbrcade-ios/build/Release-iphoneos/JBRCADE-iOS.zip
